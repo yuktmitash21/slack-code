@@ -1,6 +1,6 @@
-# Slack Bot with Channel Context
+# Slack Bot with Channel Context & GitHub Integration
 
-A Slack bot that responds to mentions (@bot) and provides full context from the channel conversation. The bot can access recent messages from both the channel and any thread it's mentioned in.
+A Slack bot that responds to mentions (@bot) and provides full context from the channel conversation. The bot can access recent messages from both the channel and any thread it's mentioned in. It can also create GitHub pull requests on demand!
 
 ## Features
 
@@ -9,11 +9,14 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - 🧵 Understands thread context when mentioned in a thread
 - 📝 Shows formatted conversation history with timestamps and usernames
 - ⚡️ Uses Socket Mode for real-time communication (no public URL needed)
+- 🔧 **NEW:** Creates GitHub pull requests when given a task
+- 🚀 **NEW:** Integrates with GitHub API for automated PR creation
 
 ## Prerequisites
 
 - Python 3.8 or higher
 - A Slack workspace where you have permission to install apps
+- (Optional) A GitHub account and repository for PR creation feature
 
 ## Setup Instructions
 
@@ -84,7 +87,13 @@ pip install -r requirements.txt
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 SLACK_APP_TOKEN=xapp-your-app-token-here
 SLACK_SIGNING_SECRET=your-signing-secret-here
+
+# Optional: For GitHub PR creation
+GITHUB_TOKEN=ghp_your-github-token-here
+GITHUB_REPO=username/repository-name
 ```
+
+   **Note:** GitHub integration is optional. See [GITHUB_SETUP.md](GITHUB_SETUP.md) for detailed setup instructions.
 
 4. Run the bot:
 ```bash
@@ -99,7 +108,7 @@ You should see:
 
 ## Usage
 
-### Mentioning the Bot
+### Basic Context Responses
 
 In any channel where the bot is invited:
 
@@ -126,7 +135,40 @@ Your message: @ContextBot what's the status on the project?
   [2025-11-22 10:30:20] User: @ContextBot what's the status on the project?
 
 I have access to the last 25 messages from this channel.
+
+💡 Tip: You can ask me to create a PR for [task description] to generate a pull request!
 ```
+
+### Creating GitHub Pull Requests
+
+If you've set up GitHub integration (see [GITHUB_SETUP.md](GITHUB_SETUP.md)), you can ask the bot to create pull requests:
+
+```
+User: @ContextBot create a PR for adding user authentication
+
+Bot: 🤖 Got it @User! Creating a pull request for: adding user authentication
+
+Please wait...
+
+[A moment later...]
+
+✅ Pull Request Created Successfully!
+
+📋 Task: adding user authentication
+🔢 PR #: 42
+🌿 Branch: bot-task-20251122-143045
+🔗 URL: https://github.com/yuktmitash21/slack-code/pull/42
+
+📝 Changes: Created new file: bot_tasks/task_20251122-143045.txt
+
+The PR is ready for review! 🎉
+```
+
+**Other PR command variations:**
+- `@BotName make a pull request for bug fix`
+- `@BotName open a PR to refactor database code`
+- `@BotName submit a PR for new feature`
+- `@BotName generate a pull request for documentation updates`
 
 ## How It Works
 
@@ -154,10 +196,13 @@ The bot uses two methods to gather context:
 ```
 slack-bot/
 ├── slack_bot.py          # Main bot application
+├── github_helper.py      # GitHub PR creation logic
 ├── requirements.txt      # Python dependencies
 ├── .env                  # Environment variables (create this)
 ├── .gitignore           # Git ignore file
-└── README.md            # This file
+├── README.md            # This file
+├── SETUP_GUIDE.md       # Detailed Slack setup guide
+└── GITHUB_SETUP.md      # GitHub integration setup guide
 ```
 
 ## Troubleshooting
@@ -224,15 +269,35 @@ def handle_reaction(event, say):
 - Use environment variables for all sensitive data
 - The `.env` file is already in `.gitignore` to prevent accidental commits
 
+## GitHub PR Feature
+
+The bot can now create GitHub pull requests! Currently, it creates placeholder PRs with random changes to demonstrate the functionality. 
+
+**Current behavior:**
+- Creates a new branch
+- Makes a random change (adds comment to README, creates task log, or updates bot stats)
+- Opens a pull request with your task description
+
+**Future enhancements:**
+- Parse task descriptions to generate actual code
+- Integrate with AI/LLM for intelligent code generation
+- Read existing code and make contextual modifications
+- Run tests before creating PRs
+
+See [GITHUB_SETUP.md](GITHUB_SETUP.md) for complete setup instructions.
+
 ## Contributing
 
 Feel free to fork this project and customize it for your needs. Some ideas for enhancements:
 
-- Add AI/LLM integration to generate intelligent responses based on context
+- ✅ **GitHub PR creation** (implemented!)
+- Add AI/LLM integration to generate intelligent code based on context
 - Store conversation history in a database
 - Add sentiment analysis
 - Implement custom commands
 - Add support for direct messages
+- Parse task descriptions to generate actual code changes
+- Add automated testing before PR creation
 
 ## License
 
