@@ -12,7 +12,12 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - 🔧 **NEW:** Creates GitHub pull requests when given a task
 - 🔀 **NEW:** Merges pull requests directly from Slack
 - ↩️ **NEW:** Reverts/unmerges PRs by creating revert PRs
-- 🤖 **NEW:** AI-powered code generation using SpoonOS framework
+- 🤖 **NEW:** AI-powered code generation using OpenAI
+- 📖 **NEW:** Full codebase context - AI agent reads entire repository before making changes
+- 🎯 **NEW:** Context-aware code generation that integrates seamlessly with existing code
+- 📝 **NEW:** Changeset format - every response shows exactly what files/code will be created
+- ✏️ **NEW:** File modifications - edits existing files while preserving existing code
+- 💬 **NEW:** Iterative refinement - provide feedback to update the changeset before creating PR
 - 🚀 **NEW:** Full GitHub API integration for PR lifecycle management
 
 ## Prerequisites
@@ -20,7 +25,7 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - Python 3.8 or higher
 - A Slack workspace where you have permission to install apps
 - (Optional) A GitHub account and repository for PR creation feature
-- (Optional) OpenAI or Anthropic API key for AI code generation
+- (Optional) OpenAI API key for AI code generation
 
 ## Setup Instructions
 
@@ -57,13 +62,16 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 
 1. Go to **"Event Subscriptions"** in the sidebar
 2. Toggle **"Enable Events"** to ON
-3. Under **"Subscribe to bot events"**, add:
+3. Under **"Subscribe to bot events"**, add these **REQUIRED** events:
 
-   - `app_mention` - When the bot is mentioned
-   - `message.channels` - To monitor channel messages (optional, for logging)
-   - `message.groups` - To monitor private channels (optional)
+   - `app_mention` - When the bot is mentioned (**REQUIRED**)
+   - `message.channels` - To receive replies in threads (**REQUIRED for conversations**)
+   - `message.groups` - To work in private channels (optional)
+   - `message.im` - To work in DMs (optional)
 
 4. Click **"Save Changes"**
+
+⚠️ **Important**: Without `message.channels`, the bot won't respond to your follow-up messages in threads!
 
 ### 5. Install the App to Your Workspace
 

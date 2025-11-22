@@ -15,10 +15,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Try to import AI agent
+# Try to import AI agent (SpoonOS)
 try:
     from ai_agent import get_ai_code_generator
     AI_AGENT_AVAILABLE = True
+    logger.info("Using SpoonOS AI agent for code generation")
 except ImportError:
     AI_AGENT_AVAILABLE = False
     logger.info("AI agent not available. Using placeholder code generation.")
@@ -54,6 +55,108 @@ class GitHubPRHelper:
             except Exception as e:
                 logger.warning(f"Failed to initialize AI generator: {e}")
                 self.use_ai = False
+    
+    def _get_full_codebase_context(self, branch_name="main"):
+        """
+        Fetch and read all relevant files from the repository
+        
+        Args:
+            branch_name: Branch to read files from (default: main)
+            
+        Returns:
+            String containing all file contents with paths
+        """
+        try:
+            logger.info(f"Reading full codebase from branch: {branch_name}")
+            
+            # Clone or fetch the repository to a temp directory
+            temp_dir = tempfile.mkdtemp()
+            try:
+                # Clone the repository
+                clone_url = self.repo.clone_url
+                # Use authenticated URL if possible
+                if hasattr(self, 'github') and self.github._Github__requester.auth:
+                    token = os.environ.get('GITHUB_TOKEN')
+                    if token:
+                        clone_url = clone_url.replace('https://', f'https://{token}@')
+                
+                logger.info(f"Cloning repository to {temp_dir}")
+                repo = Repo.clone_from(clone_url, temp_dir, branch=branch_name, depth=1)
+                
+                # Build context from all relevant files
+                context_parts = [f"Repository: {self.repo_name}", f"Branch: {branch_name}", ""]
+                
+                # File extensions to include (source code files)
+                include_extensions = {
+                    '.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.go', '.rs',
+                    '.cpp', '.c', '.h', '.hpp', '.cs', '.rb', '.php', '.swift',
+                    '.kt', '.scala', '.sh', '.bash', '.yaml', '.yml', '.json',
+                    '.md', '.txt', '.sql', '.r', '.m', '.lua', '.pl', '.pm'
+                }
+                
+                # Directories to skip
+                skip_dirs = {
+                    '.git', 'node_modules', 'venv', '__pycache__', '.venv',
+                    'env', 'dist', 'build', 'target', '.idea', '.vscode',
+                    'vendor', 'bin', 'obj', '.next', '.nuxt', 'coverage'
+                }
+                
+                file_count = 0
+                total_size = 0
+                max_file_size = 500 * 1024  # 500KB per file limit
+                
+                # Walk through the repository
+                for root, dirs, files in os.walk(temp_dir):
+                    # Filter out skip directories
+                    dirs[:] = [d for d in dirs if d not in skip_dirs]
+                    
+                    for filename in files:
+                        # Check file extension
+                        _, ext = os.path.splitext(filename)
+                        if ext not in include_extensions:
+                            continue
+                        
+                        filepath = os.path.join(root, filename)
+                        relative_path = os.path.relpath(filepath, temp_dir)
+                        
+                        # Skip large files
+                        try:
+                            file_size = os.path.getsize(filepath)
+                            if file_size > max_file_size:
+                                logger.info(f"Skipping large file: {relative_path} ({file_size} bytes)")
+                                continue
+                        except OSError:
+                            continue
+                        
+                        # Read file content
+                        try:
+                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                            
+                            context_parts.append(f"--- FILE: {relative_path} ---")
+                            context_parts.append(content)
+                            context_parts.append(f"--- END FILE: {relative_path} ---")
+                            context_parts.append("")
+                            
+                            file_count += 1
+                            total_size += len(content)
+                        except Exception as e:
+                            logger.warning(f"Could not read file {relative_path}: {e}")
+                
+                logger.info(f"Read {file_count} files, total {total_size} characters")
+                
+                return "\n".join(context_parts)
+                
+            finally:
+                # Clean up temp directory
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as e:
+                    logger.warning(f"Could not clean up temp dir {temp_dir}: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error getting codebase context: {e}")
+            return f"Repository: {self.repo_name}\n\nError reading codebase: {str(e)}"
         
     def _generate_branch_name(self, task_description, thread_context=None):
         """
@@ -128,13 +231,14 @@ class GitHubPRHelper:
         logger.info(f"Generated branch name: {branch_name} (from task: {task_description[:50]})")
         return branch_name
     
-    def create_random_pr(self, task_description="", thread_context=None):
+    def create_random_pr(self, task_description="", thread_context=None, codebase_context=None):
         """
         Create a random pull request to the repository
         
         Args:
             task_description: Description of the task from Slack (can be full conversation history)
             thread_context: Optional thread context (thread_ts) for unique branch naming
+            codebase_context: Full codebase context (all files) for AI to understand existing code
             
         Returns:
             dict with PR details or error
@@ -177,7 +281,7 @@ class GitHubPRHelper:
                     logger.info(f"Found deletion request in conversation: {files_to_delete}")
             
             # Make a random change to a file
-            change_result = self._make_random_change(branch_name, task_description)
+            change_result = self._make_random_change(branch_name, task_description, codebase_context)
             
             if not change_result["success"]:
                 return {
@@ -187,6 +291,7 @@ class GitHubPRHelper:
             
             # Create the pull request
             # Clean up task description for PR title (remove newlines, limit length)
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             clean_task = (task_description[:50].replace('\n', ' ').strip() if task_description else f"Bot Generated PR - {timestamp}")
             pr_title = f"🤖 Bot Task: {clean_task}"
             pr_body = self._generate_pr_description(task_description, change_result)
@@ -239,7 +344,7 @@ class GitHubPRHelper:
         Detect if the task is asking to delete/remove a file
         
         Args:
-            task_description: Task description from Slack
+            task_description: Task description from Slack (may include conversation history)
             
         Returns:
             List of file paths to delete, or empty list
@@ -247,26 +352,48 @@ class GitHubPRHelper:
         import re
         files_to_delete = []
         
-        # Patterns to detect file deletion requests
+        # More flexible patterns to detect file deletion requests
+        # These patterns are more lenient to handle conversation formats
         deletion_patterns = [
-            r'delete\s+(?:the\s+)?(?:file\s+)?([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
-            r'remove\s+(?:the\s+)?(?:file\s+)?([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
-            r'delete\s+([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
-            r'remove\s+([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
-            # Also match without file extension for common files
-            r'delete\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_/-]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml))',
+            # Match "delete/remove [the] [file] <filename>"
+            r'(?:delete|remove)\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_/.-]+\.(?:py|js|ts|tsx|jsx|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat|rb|php|cpp|c|h|hpp))',
+            # Match "<filename>" in quotes after delete/remove
+            r'(?:delete|remove)\s+["\']([a-zA-Z0-9_/.-]+\.[a-zA-Z0-9]+)["\']',
+            # Match file paths with directory
+            r'(?:delete|remove)\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_/-]+/[a-zA-Z0-9_/.-]+\.[a-zA-Z0-9]+)',
         ]
         
-        task_lower = task_description.lower()
+        # Process each line of the task description (in case it's multi-line conversation)
+        lines = task_description.split('\n')
+        logger.info(f"🔍 Checking {len(lines)} lines for file deletion patterns")
         
-        for pattern in deletion_patterns:
-            matches = re.findall(pattern, task_lower, re.IGNORECASE)
-            for match in matches:
-                file_path = match.strip()
-                # Remove quotes if present
-                file_path = file_path.strip('"\'')
-                if file_path and file_path not in files_to_delete:
-                    files_to_delete.append(file_path)
+        for line in lines:
+            line_lower = line.lower()
+            
+            # Skip lines that don't contain delete/remove keywords
+            if 'delete' not in line_lower and 'remove' not in line_lower:
+                continue
+            
+            logger.info(f"🔍 Found delete/remove keyword in line: {line[:150]}")
+            
+            for pattern in deletion_patterns:
+                matches = re.findall(pattern, line_lower, re.IGNORECASE)
+                if matches:
+                    logger.info(f"Pattern '{pattern[:50]}...' matched: {matches}")
+                for match in matches:
+                    file_path = match.strip()
+                    # Remove quotes if present
+                    file_path = file_path.strip('"\'')
+                    # Remove any trailing punctuation
+                    file_path = file_path.rstrip('.,;:!?')
+                    if file_path and file_path not in files_to_delete:
+                        files_to_delete.append(file_path)
+                        logger.info(f"✅ Detected file to delete: '{file_path}'")
+        
+        if not files_to_delete:
+            logger.info("ℹ️  No files detected for deletion")
+        else:
+            logger.info(f"✅ Total files to delete: {files_to_delete}")
         
         return files_to_delete
     
@@ -282,14 +409,20 @@ class GitHubPRHelper:
         Returns:
             dict with deletion result
         """
+        logger.info(f"🗑️  Starting file deletion on branch '{branch_name}'")
+        logger.info(f"Files to delete: {files_to_delete}")
+        
         deleted_files = []
         errors = []
         
         for file_path in files_to_delete:
             try:
+                logger.info(f"Attempting to delete: {file_path}")
                 # Check if file exists
                 try:
                     existing_file = self.repo.get_contents(file_path, ref=branch_name)
+                    logger.info(f"File found on branch, SHA: {existing_file.sha}")
+                    
                     # Delete the file
                     self.repo.delete_file(
                         path=file_path,
@@ -298,16 +431,18 @@ class GitHubPRHelper:
                         branch=branch_name
                     )
                     deleted_files.append(file_path)
-                    logger.info(f"Successfully deleted {file_path}")
+                    logger.info(f"✅ Successfully deleted {file_path}")
                 except GithubException as e:
                     if e.status == 404:
-                        logger.warning(f"File {file_path} not found, skipping deletion")
+                        logger.warning(f"❌ File {file_path} not found on branch {branch_name}")
                         errors.append(f"{file_path} (not found)")
                     else:
-                        logger.error(f"Failed to delete {file_path}: {e}")
+                        logger.error(f"❌ GitHub API error deleting {file_path}: {e}")
                         errors.append(f"{file_path} ({str(e)})")
             except Exception as e:
-                logger.error(f"Error deleting {file_path}: {e}")
+                logger.error(f"❌ Unexpected error deleting {file_path}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 errors.append(f"{file_path} ({str(e)})")
         
         if deleted_files:
@@ -321,13 +456,14 @@ class GitHubPRHelper:
                 "error": f"Could not delete files: {', '.join(errors) if errors else ', '.join(files_to_delete)}"
             }
     
-    def _make_random_change(self, branch_name, task_description):
+    def _make_random_change(self, branch_name, task_description, codebase_context=None):
         """
         Make changes using AI or fallback to random changes
         
         Args:
             branch_name: Name of the branch to commit to
             task_description: Task description from Slack
+            codebase_context: Full codebase context for AI to understand existing code
             
         Returns:
             dict with change details
@@ -337,14 +473,17 @@ class GitHubPRHelper:
             files_to_delete = self._detect_file_deletion(task_description)
             
             if files_to_delete:
-                logger.info(f"Detected file deletion request: {files_to_delete}")
-                return self._delete_files(branch_name, task_description, files_to_delete)
+                logger.info(f"✅ Detected file deletion request: {files_to_delete}")
+                logger.info(f"Task description: {task_description[:200]}")
+                deletion_result = self._delete_files(branch_name, task_description, files_to_delete)
+                logger.info(f"Deletion result: {deletion_result}")
+                return deletion_result
             
             # Try AI-generated code first
             if self.use_ai and self.ai_generator:
                 logger.info("Attempting AI code generation...")
                 try:
-                    result = self._create_ai_generated_code(branch_name, task_description)
+                    result = self._create_ai_generated_code(branch_name, task_description, codebase_context)
                     if result["success"]:
                         return result
                     else:
@@ -371,23 +510,44 @@ class GitHubPRHelper:
                 "error": str(e)
             }
     
-    def _create_ai_generated_code(self, branch_name, task_description):
+    def _create_ai_generated_code(self, branch_name, task_description, codebase_context=None):
         """
         Create code using AI agent
         
         Args:
             branch_name: Name of the branch to commit to
             task_description: Task description from Slack
+            codebase_context: Full codebase context (all files) for AI to understand existing code
             
         Returns:
             dict with change details
         """
         try:
-            # Get repository context
-            repo_context = f"Repository: {self.repo_name}\nLanguage: Python\nBranch: {branch_name}"
+            # Build comprehensive context for AI
+            if codebase_context:
+                # Use the full codebase context provided
+                repo_context = f"""Repository: {self.repo_name}
+Branch: {branch_name}
+
+FULL CODEBASE CONTEXT:
+{codebase_context}
+
+IMPORTANT: You have access to ALL existing files above.
+- You can MODIFY existing files (provide complete updated content)
+- You can CREATE new files
+- You can DELETE code from existing files
+- Preserve existing functionality unless explicitly told to remove it
+"""
+                logger.info(f"Using full codebase context: {len(codebase_context)} characters")
+            else:
+                # Fallback to minimal context
+                repo_context = f"Repository: {self.repo_name}\nLanguage: Python\nBranch: {branch_name}"
+                logger.warning("No codebase context provided - AI will have limited visibility")
             
             # Generate code using AI
             logger.info(f"Generating code with AI for: {task_description}")
+            logger.info(f"Total context size: {len(repo_context)} characters")
+            
             result = self.ai_generator.generate_code_sync(
                 task_description=task_description,
                 context=repo_context
@@ -407,10 +567,11 @@ class GitHubPRHelper:
                 file_desc = file_info.get("description", "AI-generated code")
                 
                 try:
-                    # Check if file exists
+                    # Check if file exists in the repository
                     try:
                         existing_file = self.repo.get_contents(file_path, ref=branch_name)
-                        # Update existing file
+                        
+                        # Update existing file with AI-generated content
                         self.repo.update_file(
                             path=file_path,
                             message=f"🤖 Update {file_path}: {task_description[:50]}",
