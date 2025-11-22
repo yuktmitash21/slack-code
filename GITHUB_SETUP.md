@@ -11,18 +11,22 @@ This guide will help you set up GitHub integration so your Slack bot can create 
 ## Step 1: Create a GitHub Personal Access Token
 
 1. **Go to GitHub Settings:**
+
    - Click your profile picture (top right) → **Settings**
    - Or visit: https://github.com/settings/profile
 
 2. **Navigate to Developer Settings:**
+
    - Scroll down in the left sidebar
    - Click **Developer settings** (at the bottom)
 
 3. **Create Personal Access Token:**
+
    - Click **Personal access tokens** → **Tokens (classic)**
    - Click **Generate new token** → **Generate new token (classic)**
 
 4. **Configure Token:**
+
    - **Note:** `Slack Bot PR Creator` (or any descriptive name)
    - **Expiration:** Choose your preference (90 days, 1 year, or no expiration)
    - **Select scopes:** Check these boxes:
@@ -43,6 +47,7 @@ The bot needs to know which repository to create PRs against.
 Your repository format should be: `owner/repo-name`
 
 **Examples:**
+
 - `yuktmitash21/slack-code`
 - `octocat/Hello-World`
 - `your-username/your-repo`
@@ -63,9 +68,9 @@ GITHUB_REPO=yuktmitash21/slack-code
 
 ```bash
 # Slack Configuration
-SLACK_BOT_TOKEN=xoxb-1234567890-1234567890-abcdefghijklmnopqrstuvwx
-SLACK_APP_TOKEN=xapp-1-A01ABCDEFGH-1234567890-abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrs
-SLACK_SIGNING_SECRET=1234567890abcdef1234567890abcdef
+SLACK_BOT_TOKEN=xoxb-this-is-fake-token
+SLACK_APP_TOKEN=xapp-1-this-is-fake-token
+SLACK_SIGNING_SECRET=this-is-fake-token
 
 # GitHub Configuration
 GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234567890
@@ -85,6 +90,7 @@ pip install -r requirements.txt
 ```
 
 This will install:
+
 - `PyGithub` - GitHub API library
 - `gitpython` - Git operations library
 
@@ -98,6 +104,7 @@ python slack_bot.py
 ```
 
 You should see:
+
 ```
 ⚡️ Starting Slack bot in Socket Mode...
 GitHub integration enabled
@@ -109,11 +116,13 @@ GitHub integration enabled
 ### In Slack:
 
 1. **Invite the bot to a channel** (if not already):
+
    ```
    /invite @YourBotName
    ```
 
 2. **Ask the bot to create a PR:**
+
    ```
    @BotName create a PR for adding user authentication
    ```
@@ -135,6 +144,7 @@ GitHub integration enabled
    - Creates a task log file, OR
    - Updates a bot statistics file
 4. It creates a pull request with:
+
    - Your task description in the title
    - Detailed PR description
    - Changes made
@@ -172,6 +182,7 @@ Right now, the bot creates **random PRs** to demonstrate the functionality. When
 ### Future Implementation
 
 Later, you can extend the bot to:
+
 - Parse the task description and generate actual code
 - Integrate with AI/LLM to write code based on the task
 - Read existing code and make intelligent modifications
@@ -200,6 +211,7 @@ your-repo/
 **Problem:** Bot responds that GitHub is not configured.
 
 **Solutions:**
+
 1. Check your `.env` file has both `GITHUB_TOKEN` and `GITHUB_REPO`
 2. Make sure there are no spaces around the `=` sign
 3. Restart the bot after adding the variables
@@ -210,6 +222,7 @@ your-repo/
 **Problem:** GitHub token is invalid or expired.
 
 **Solutions:**
+
 1. Generate a new token following Step 1
 2. Make sure you copied the entire token (starts with `ghp_`)
 3. Update `.env` with the new token
@@ -220,6 +233,7 @@ your-repo/
 **Problem:** Repository name is incorrect or bot doesn't have access.
 
 **Solutions:**
+
 1. Verify `GITHUB_REPO` format is `owner/repo-name`
 2. Check the repository exists and is accessible
 3. Ensure your token has `repo` scope access
@@ -230,6 +244,7 @@ your-repo/
 **Problem:** Token doesn't have required permissions.
 
 **Solutions:**
+
 1. Regenerate token with `repo` and `workflow` scopes checked
 2. Make sure you're using a Personal Access Token (classic)
 3. Update `.env` with the new token
@@ -243,6 +258,7 @@ your-repo/
 **Problem:** Often a permissions issue.
 
 **Solutions:**
+
 1. Make sure you have write access to the repository
 2. Check if branch protection rules are blocking bot PRs
 3. Verify the default branch name matches your repo (main vs master)
@@ -273,16 +289,19 @@ your-repo/
 Once you have the basic setup working, you can customize:
 
 1. **Change Types:**
+
    - Modify `github_helper.py` to add new change types
    - Implement actual code generation logic
    - Integrate with AI for intelligent code writing
 
 2. **PR Templates:**
+
    - Customize `_generate_pr_description()` method
    - Add labels, reviewers, or assignees automatically
    - Include testing results or screenshots
 
 3. **Validation:**
+
    - Add code linting before creating PR
    - Run tests on the new branch
    - Check for conflicts with base branch
@@ -311,4 +330,3 @@ Now that GitHub integration is set up:
 ---
 
 Questions? Issues? Check the main README or open an issue! 🚀
-
