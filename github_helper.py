@@ -6,6 +6,8 @@ import os
 import random
 import tempfile
 import shutil
+import hashlib
+import re
 from datetime import datetime
 from github import Github, GithubException
 from git import Repo, GitCommandError
@@ -53,20 +55,93 @@ class GitHubPRHelper:
                 logger.warning(f"Failed to initialize AI generator: {e}")
                 self.use_ai = False
         
-    def create_random_pr(self, task_description=""):
+    def _generate_branch_name(self, task_description, thread_context=None):
+        """
+        Generate a unique branch name based on thread context and task description
+        
+        Args:
+            task_description: Task description from Slack
+            thread_context: Optional thread context (thread_ts or conversation hash)
+            
+        Returns:
+            Unique branch name
+        """
+        # Extract a meaningful slug from the task description
+        def create_slug(text, max_length=30):
+            """Create a URL-friendly slug from text"""
+            # Remove bot mentions and common words
+            text = re.sub(r'<@[A-Z0-9]+>', '', text)
+            text = re.sub(r'\b(create|make|open|submit|generate|a|an|the|pr|pull request|for|to)\b', '', text, flags=re.IGNORECASE)
+            
+            # Convert to lowercase and replace spaces/special chars with hyphens
+            slug = re.sub(r'[^\w\s-]', '', text.lower())
+            slug = re.sub(r'[-\s]+', '-', slug)
+            slug = slug.strip('-')
+            
+            # Truncate to max_length
+            if len(slug) > max_length:
+                slug = slug[:max_length].rstrip('-')
+            
+            # Ensure it's not empty
+            if not slug:
+                slug = "task"
+            
+            return slug
+        
+        # Create slug from task description
+        task_slug = create_slug(task_description)
+        
+        # Create a hash from the full context (task + thread context if available)
+        hash_input = task_description
+        if thread_context:
+            hash_input += str(thread_context)
+        
+        # Generate a short hash (first 8 characters)
+        context_hash = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:8]
+        
+        # Combine: bot-{slug}-{hash}
+        branch_name = f"bot-{task_slug}-{context_hash}"
+        
+        # Ensure branch name is valid (GitHub has restrictions)
+        # Remove any invalid characters
+        branch_name = re.sub(r'[^a-z0-9\-_]', '', branch_name.lower())
+        # Ensure it doesn't start with a dot or hyphen
+        branch_name = branch_name.lstrip('.-')
+        # Limit total length (GitHub allows up to 255, but keep it reasonable)
+        if len(branch_name) > 100:
+            branch_name = branch_name[:100].rstrip('-')
+        
+        # Check if branch exists and append counter if needed
+        counter = 0
+        original_branch_name = branch_name
+        while counter < 100:  # Safety limit
+            try:
+                # Try to get the branch - if it exists, this will succeed
+                self.repo.get_branch(branch_name)
+                # Branch exists, try with counter
+                counter += 1
+                branch_name = f"{original_branch_name}-{counter}"
+            except GithubException:
+                # Branch doesn't exist, we can use this name
+                break
+        
+        logger.info(f"Generated branch name: {branch_name} (from task: {task_description[:50]})")
+        return branch_name
+    
+    def create_random_pr(self, task_description="", thread_context=None):
         """
         Create a random pull request to the repository
         
         Args:
-            task_description: Description of the task from Slack
+            task_description: Description of the task from Slack (can be full conversation history)
+            thread_context: Optional thread context (thread_ts) for unique branch naming
             
         Returns:
             dict with PR details or error
         """
         try:
-            # Generate unique branch name
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            branch_name = f"bot-task-{timestamp}"
+            # Generate unique branch name based on thread context
+            branch_name = self._generate_branch_name(task_description, thread_context)
             
             # Get the default branch
             default_branch = self.repo.default_branch
@@ -80,6 +155,27 @@ class GitHubPRHelper:
                 sha=base_sha
             )
             
+            # Extract the actual task from conversation history if it's a multi-line conversation
+            # Look for the original task description (usually in the first user message)
+            actual_task = task_description
+            if "\n\n" in task_description or "user:" in task_description.lower():
+                # This is a conversation history, extract the task
+                lines = task_description.split("\n")
+                for line in lines:
+                    line_lower = line.lower()
+                    if ("user:" in line_lower or "create" in line_lower or "make" in line_lower) and ("pr" in line_lower or "delete" in line_lower or "remove" in line_lower):
+                        # Extract the task part
+                        if ":" in line:
+                            actual_task = line.split(":", 1)[1].strip()
+                        else:
+                            actual_task = line.strip()
+                        break
+                # Also search the full text for deletion patterns
+                files_to_delete = self._detect_file_deletion(task_description)
+                if files_to_delete:
+                    # Use the full conversation for context, but prioritize deletion
+                    logger.info(f"Found deletion request in conversation: {files_to_delete}")
+            
             # Make a random change to a file
             change_result = self._make_random_change(branch_name, task_description)
             
@@ -90,25 +186,40 @@ class GitHubPRHelper:
                 }
             
             # Create the pull request
-            pr_title = f"🤖 Bot Task: {task_description[:50]}" if task_description else f"🤖 Bot Generated PR - {timestamp}"
+            # Clean up task description for PR title (remove newlines, limit length)
+            clean_task = (task_description[:50].replace('\n', ' ').strip() if task_description else f"Bot Generated PR - {timestamp}")
+            pr_title = f"🤖 Bot Task: {clean_task}"
             pr_body = self._generate_pr_description(task_description, change_result)
             
-            pr = self.repo.create_pull(
-                title=pr_title,
-                body=pr_body,
-                head=branch_name,
-                base=default_branch
-            )
+            logger.info(f"Creating PR with title: {pr_title[:100]}")
+            logger.info(f"Change result: {change_result}")
             
-            logger.info(f"Pull request created: {pr.html_url}")
-            
-            return {
-                "success": True,
-                "pr_number": pr.number,
-                "pr_url": pr.html_url,
-                "branch_name": branch_name,
-                "changes": change_result["changes"]
-            }
+            try:
+                pr = self.repo.create_pull(
+                    title=pr_title,
+                    body=pr_body,
+                    head=branch_name,
+                    base=default_branch
+                )
+                
+                logger.info(f"Pull request created: {pr.html_url}")
+                
+                return {
+                    "success": True,
+                    "pr_number": pr.number,
+                    "pr_url": pr.html_url,
+                    "branch_name": branch_name,
+                    "changes": change_result.get("changes", "Changes made")
+                }
+            except GithubException as pr_error:
+                logger.error(f"Failed to create PR: {pr_error}")
+                # Return error but note that changes were made
+                return {
+                    "success": False,
+                    "error": f"Changes made but PR creation failed: {pr_error.data.get('message', str(pr_error))}",
+                    "branch_name": branch_name,
+                    "changes": change_result.get("changes", "Changes made")
+                }
             
         except GithubException as e:
             logger.error(f"GitHub API error: {e}")
@@ -123,6 +234,93 @@ class GitHubPRHelper:
                 "error": str(e)
             }
     
+    def _detect_file_deletion(self, task_description):
+        """
+        Detect if the task is asking to delete/remove a file
+        
+        Args:
+            task_description: Task description from Slack
+            
+        Returns:
+            List of file paths to delete, or empty list
+        """
+        import re
+        files_to_delete = []
+        
+        # Patterns to detect file deletion requests
+        deletion_patterns = [
+            r'delete\s+(?:the\s+)?(?:file\s+)?([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
+            r'remove\s+(?:the\s+)?(?:file\s+)?([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
+            r'delete\s+([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
+            r'remove\s+([^\s]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml|xml|html|css|sh|bat))',
+            # Also match without file extension for common files
+            r'delete\s+(?:the\s+)?(?:file\s+)?([a-zA-Z0-9_/-]+\.(?:py|js|ts|java|go|rs|md|txt|json|yaml|yml))',
+        ]
+        
+        task_lower = task_description.lower()
+        
+        for pattern in deletion_patterns:
+            matches = re.findall(pattern, task_lower, re.IGNORECASE)
+            for match in matches:
+                file_path = match.strip()
+                # Remove quotes if present
+                file_path = file_path.strip('"\'')
+                if file_path and file_path not in files_to_delete:
+                    files_to_delete.append(file_path)
+        
+        return files_to_delete
+    
+    def _delete_files(self, branch_name, task_description, files_to_delete):
+        """
+        Delete files from the repository
+        
+        Args:
+            branch_name: Name of the branch
+            task_description: Task description
+            files_to_delete: List of file paths to delete
+            
+        Returns:
+            dict with deletion result
+        """
+        deleted_files = []
+        errors = []
+        
+        for file_path in files_to_delete:
+            try:
+                # Check if file exists
+                try:
+                    existing_file = self.repo.get_contents(file_path, ref=branch_name)
+                    # Delete the file
+                    self.repo.delete_file(
+                        path=file_path,
+                        message=f"🤖 Delete {file_path}: {task_description[:50]}",
+                        sha=existing_file.sha,
+                        branch=branch_name
+                    )
+                    deleted_files.append(file_path)
+                    logger.info(f"Successfully deleted {file_path}")
+                except GithubException as e:
+                    if e.status == 404:
+                        logger.warning(f"File {file_path} not found, skipping deletion")
+                        errors.append(f"{file_path} (not found)")
+                    else:
+                        logger.error(f"Failed to delete {file_path}: {e}")
+                        errors.append(f"{file_path} ({str(e)})")
+            except Exception as e:
+                logger.error(f"Error deleting {file_path}: {e}")
+                errors.append(f"{file_path} ({str(e)})")
+        
+        if deleted_files:
+            return {
+                "success": True,
+                "changes": f"Deleted files: {', '.join(deleted_files)}" + (f" | Errors: {', '.join(errors)}" if errors else "")
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Could not delete files: {', '.join(errors) if errors else ', '.join(files_to_delete)}"
+            }
+    
     def _make_random_change(self, branch_name, task_description):
         """
         Make changes using AI or fallback to random changes
@@ -135,6 +333,13 @@ class GitHubPRHelper:
             dict with change details
         """
         try:
+            # FIRST: Check if this is a file deletion request
+            files_to_delete = self._detect_file_deletion(task_description)
+            
+            if files_to_delete:
+                logger.info(f"Detected file deletion request: {files_to_delete}")
+                return self._delete_files(branch_name, task_description, files_to_delete)
+            
             # Try AI-generated code first
             if self.use_ai and self.ai_generator:
                 logger.info("Attempting AI code generation...")

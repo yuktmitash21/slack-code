@@ -336,6 +336,22 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
         )
         return
     
+    # Check if this is a file deletion request - skip AI planning for deletions
+    if github_helper and hasattr(github_helper, '_detect_file_deletion'):
+        files_to_delete = github_helper._detect_file_deletion(message_text)
+        if files_to_delete:
+            # For deletion tasks, create PR immediately without AI planning
+            logger.info(f"Detected deletion request in conversation: {files_to_delete}, creating PR directly")
+            say(
+                text=f"<@{user_id}> 🗑️ Detected file deletion request. Creating PR to delete: {', '.join(files_to_delete)}...",
+                thread_ts=thread_ts
+            )
+            
+            # Create PR directly with the deletion task, passing thread_ts for unique branch naming
+            result = github_helper.create_random_pr(message_text, thread_context=thread_ts)
+            _send_pr_result(result, message_text, say, thread_ts, user_id)
+            return
+    
     # Initialize or get conversation state
     conversation_key = thread_ts
     
@@ -371,7 +387,8 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             for msg in pr_conversations[conversation_key]["messages"]
         ])
         
-        result = github_helper.create_random_pr(all_messages)
+        # Pass thread_ts as context for unique branch naming
+        result = github_helper.create_random_pr(all_messages, thread_context=thread_ts)
         _send_pr_result(result, pr_conversations[conversation_key]["initial_task"], say, thread_ts, stored_user_id)
         
         # Clean up
@@ -449,33 +466,51 @@ If you have questions, ask them. If you understand everything, describe what you
 
 def _send_pr_result(result, task_description, say, thread_ts, user_id):
     """Helper to send PR creation result"""
-    if result["success"]:
-        response = f"""✅ *Pull Request Created Successfully!*
+    try:
+        if not isinstance(result, dict):
+            raise ValueError(f"Invalid result type: {type(result)}")
+        
+        if result.get("success", False):
+            # Safely get all required fields with defaults
+            pr_number = result.get('pr_number', 'N/A')
+            branch_name = result.get('branch_name', 'N/A')
+            pr_url = result.get('pr_url', 'N/A')
+            changes = result.get('changes', 'No changes listed')
+            
+            response = f"""✅ *Pull Request Created Successfully!*
 
 📋 *Task:* {task_description}
-🔢 *PR #:* {result['pr_number']}
-🌿 *Branch:* `{result['branch_name']}`
-🔗 *URL:* {result['pr_url']}
+🔢 *PR #:* {pr_number}
+🌿 *Branch:* `{branch_name}`
+🔗 *URL:* {pr_url}
 
-📝 *Changes:* {result['changes']}
+📝 *Changes:* {changes}
 
-The PR is ready for review! 🎉
+The PR is ready for review! 🎉"""
 
-💡 *Tip:* You can merge it with `@bot merge PR {result['pr_number']}`
-"""
-    else:
-        response = f"""❌ *Failed to Create Pull Request*
+            if pr_number != 'N/A':
+                response += f"\n\n💡 *Tip:* You can merge it with `@bot merge PR {pr_number}`"
+        else:
+            error_msg = result.get('error', 'Unknown error occurred')
+            response = f"""❌ *Failed to Create Pull Request*
 
 *Task:* {task_description}
-*Error:* {result['error']}
+*Error:* {error_msg}
 
 Please check the logs and try again.
 """
-    
-    say(
-        text=response,
-        thread_ts=thread_ts
-    )
+        
+        say(
+            text=response,
+            thread_ts=thread_ts
+        )
+    except Exception as e:
+        logger.error(f"Error sending PR result: {e}, result: {result}")
+        error_msg = str(e) if str(e) else "Unknown error occurred"
+        say(
+            text=f"<@{user_id}> ❌ Error creating PR: {error_msg}\n\nPlease check the bot logs for details.",
+            thread_ts=thread_ts
+        )
 
 
 def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
