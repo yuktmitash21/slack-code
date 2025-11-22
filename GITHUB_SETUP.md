@@ -128,11 +128,26 @@ GitHub integration enabled
    ```
 
 3. **Other command variations:**
+
    ```
    @BotName make a pull request for bug fix
    @BotName open a PR to refactor database code
    @BotName submit a PR for new feature
    @BotName generate a pull request for documentation updates
+   ```
+
+4. **Merge a PR:**
+
+   ```
+   @BotName merge PR 42
+   @BotName merge #42
+   @BotName merge PR 42 squash
+   ```
+
+5. **Revert/Unmerge a PR:**
+   ```
+   @BotName unmerge PR 42
+   @BotName revert PR 42
    ```
 
 ### What Happens:
@@ -165,6 +180,42 @@ GitHub integration enabled
 📝 Changes: Created new file: bot_tasks/task_20251122-143045.txt
 
 The PR is ready for review! 🎉
+
+💡 Tip: You can merge it with @bot merge PR 42
+```
+
+### Merging a PR:
+
+```
+✅ Pull Request Merged Successfully!
+
+🔢 PR #: 42
+📋 Title: 🤖 Bot Task: adding user authentication
+🌿 Branch: bot-task-20251122-143045
+🔀 Merge Method: merge
+🔗 URL: https://github.com/yuktmitash21/slack-code/pull/42
+
+The changes have been merged to master! 🎉
+
+💡 Tip: If you need to undo this, use @bot unmerge PR 42
+```
+
+### Reverting/Unmerging:
+
+```
+✅ Revert Pull Request Created Successfully!
+
+🔄 Reverting PR #: 42
+📋 Original Title: 🤖 Bot Task: adding user authentication
+
+**New Revert PR:**
+🔢 PR #: 45
+🌿 Branch: revert-pr-42-20251122-150045
+🔗 URL: https://github.com/yuktmitash21/slack-code/pull/45
+
+The revert PR is ready for review! You can now merge it to undo the original changes.
+
+💡 Tip: Merge it with @bot merge PR 45
 ```
 
 ## How It Works
@@ -187,6 +238,19 @@ Later, you can extend the bot to:
 - Integrate with AI/LLM to write code based on the task
 - Read existing code and make intelligent modifications
 - Run tests before creating the PR
+
+### Reverting PRs
+
+The bot uses actual `git revert` commands to properly undo merged PRs:
+
+1. Clones the repository locally
+2. Checks out a new branch
+3. Runs `git revert -m 1 <merge_commit_sha>`
+4. Pushes the revert branch
+5. Creates a PR with the actual reverted code
+
+This is a proper git revert, not a placeholder!
+
 - Add more sophisticated code generation logic
 
 ## Repository Structure After Use

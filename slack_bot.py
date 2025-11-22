@@ -186,6 +186,72 @@ def detect_pr_command(message_text):
     return {'is_pr_command': False}
 
 
+def detect_merge_command(message_text):
+    """
+    Detect if the message contains a merge PR command
+    
+    Returns:
+        dict with 'is_merge_command', 'pr_number', and 'merge_method'
+    """
+    # Remove bot mention from text
+    clean_text = re.sub(r'<@[A-Z0-9]+>', '', message_text).strip()
+    
+    # Check for merge-related keywords with PR number
+    merge_patterns = [
+        r'merge\s+(?:pr|pull\s+request|#)\s*(\d+)',
+        r'merge\s+(\d+)',
+    ]
+    
+    for pattern in merge_patterns:
+        match = re.search(pattern, clean_text, re.IGNORECASE)
+        if match:
+            pr_number = match.group(1)
+            
+            # Check for merge method
+            merge_method = "merge"  # default
+            if re.search(r'\bsquash\b', clean_text, re.IGNORECASE):
+                merge_method = "squash"
+            elif re.search(r'\brebase\b', clean_text, re.IGNORECASE):
+                merge_method = "rebase"
+            
+            return {
+                'is_merge_command': True,
+                'pr_number': pr_number,
+                'merge_method': merge_method
+            }
+    
+    return {'is_merge_command': False}
+
+
+def detect_unmerge_command(message_text):
+    """
+    Detect if the message contains an unmerge/revert PR command
+    
+    Returns:
+        dict with 'is_unmerge_command' and 'pr_number'
+    """
+    # Remove bot mention from text
+    clean_text = re.sub(r'<@[A-Z0-9]+>', '', message_text).strip()
+    
+    # Check for unmerge/revert-related keywords with PR number
+    unmerge_patterns = [
+        r'(?:unmerge|revert)\s+(?:pr|pull\s+request|#)\s*(\d+)',
+        r'(?:unmerge|revert)\s+(\d+)',
+    ]
+    
+    for pattern in unmerge_patterns:
+        match = re.search(pattern, clean_text, re.IGNORECASE)
+        if match:
+            pr_number = match.group(1)
+            
+            return {
+                'is_unmerge_command': True,
+                'pr_number': pr_number
+            }
+    
+    return {'is_unmerge_command': False}
+
+
 def handle_pr_creation(user_id, task_description, say, thread_ts):
     """
     Handle the creation of a GitHub pull request
@@ -223,6 +289,8 @@ def handle_pr_creation(user_id, task_description, say, thread_ts):
 📝 *Changes:* {result['changes']}
 
 The PR is ready for review! 🎉
+
+💡 *Tip:* You can merge it with `@bot merge PR {result['pr_number']}`
 """
     else:
         response = f"""❌ *Failed to Create Pull Request*
@@ -231,6 +299,118 @@ The PR is ready for review! 🎉
 *Error:* {result['error']}
 
 Please check the logs and try again.
+"""
+    
+    say(
+        text=response,
+        thread_ts=thread_ts
+    )
+
+
+def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
+    """
+    Handle merging a GitHub pull request
+    
+    Args:
+        user_id: Slack user ID
+        pr_number: PR number to merge
+        merge_method: Method to use for merging (merge, squash, rebase)
+        say: Slack say function
+        thread_ts: Thread timestamp
+    """
+    if not github_helper:
+        say(
+            text=f"Sorry <@{user_id}>, GitHub integration is not configured. Please add GITHUB_TOKEN and GITHUB_REPO to your .env file.",
+            thread_ts=thread_ts
+        )
+        return
+    
+    # Send acknowledgment
+    say(
+        text=f"🔄 Got it <@{user_id}>! Merging PR #{pr_number} using {merge_method} method...\n\nPlease wait...",
+        thread_ts=thread_ts
+    )
+    
+    # Merge the PR
+    result = github_helper.merge_pr(pr_number, merge_method)
+    
+    if result["success"]:
+        response = f"""✅ *Pull Request Merged Successfully!*
+
+🔢 *PR #:* {result['pr_number']}
+📋 *Title:* {result['pr_title']}
+🌿 *Branch:* `{result['branch_name']}`
+🔀 *Merge Method:* {result['merge_method']}
+🔗 *URL:* {result['pr_url']}
+
+The changes have been merged to master! 🎉
+
+💡 *Tip:* If you need to undo this, use `@bot unmerge PR {result['pr_number']}`
+"""
+    else:
+        response = f"""❌ *Failed to Merge Pull Request*
+
+*PR #:* {pr_number}
+*Error:* {result['error']}
+
+Please check the PR status and try again, or merge it manually on GitHub.
+"""
+    
+    say(
+        text=response,
+        thread_ts=thread_ts
+    )
+
+
+def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
+    """
+    Handle creating a revert PR for a merged pull request
+    
+    Args:
+        user_id: Slack user ID
+        pr_number: PR number to revert
+        say: Slack say function
+        thread_ts: Thread timestamp
+    """
+    if not github_helper:
+        say(
+            text=f"Sorry <@{user_id}>, GitHub integration is not configured. Please add GITHUB_TOKEN and GITHUB_REPO to your .env file.",
+            thread_ts=thread_ts
+        )
+        return
+    
+    # Send acknowledgment
+    say(
+        text=f"🔄 Got it <@{user_id}>! Creating a revert PR for #{pr_number}...\n\nPlease wait...",
+        thread_ts=thread_ts
+    )
+    
+    # Create the revert PR
+    result = github_helper.create_revert_pr(pr_number)
+    
+    if result["success"]:
+        response = f"""✅ *Revert Pull Request Created Successfully!*
+
+🔄 *Reverting PR #:* {result['original_pr_number']}
+📋 *Original Title:* {result['original_pr_title']}
+🔗 *Original PR:* {result['original_pr_url']}
+
+**New Revert PR:**
+🔢 *PR #:* {result['revert_pr_number']}
+🌿 *Branch:* `{result['revert_branch_name']}`
+🔗 *URL:* {result['revert_pr_url']}
+
+The revert PR is ready for review! You can now merge it to undo the original changes.
+
+💡 *Tip:* Merge it with `@bot merge PR {result['revert_pr_number']}`
+"""
+    else:
+        response = f"""❌ *Failed to Create Revert PR*
+
+*Original PR #:* {pr_number}
+*Error:* {result['error']}
+
+Note: You can only revert PRs that have been merged.
 """
     
     say(
@@ -263,6 +443,22 @@ def handle_app_mention(event, client, say, logger):
         if pr_check['is_pr_command']:
             logger.info(f"PR creation requested: {pr_check['task_description']}")
             handle_pr_creation(user_id, pr_check['task_description'], say, thread_ts)
+            return
+        
+        # Check if this is a merge PR command
+        merge_check = detect_merge_command(message_text)
+        
+        if merge_check['is_merge_command']:
+            logger.info(f"PR merge requested: PR #{merge_check['pr_number']} using {merge_check['merge_method']}")
+            handle_pr_merge(user_id, merge_check['pr_number'], merge_check['merge_method'], say, thread_ts)
+            return
+        
+        # Check if this is an unmerge/revert PR command
+        unmerge_check = detect_unmerge_command(message_text)
+        
+        if unmerge_check['is_unmerge_command']:
+            logger.info(f"PR revert requested: PR #{unmerge_check['pr_number']}")
+            handle_pr_unmerge(user_id, unmerge_check['pr_number'], say, thread_ts)
             return
         
         # Regular context response
@@ -300,7 +496,10 @@ def handle_app_mention(event, client, say, logger):
         
         # Add GitHub PR help if enabled
         if github_helper:
-            response += "\n\n💡 *Tip:* You can ask me to `create a PR for [task description]` to generate a pull request!"
+            response += "\n\n💡 *Tips:*"
+            response += "\n• Create a PR: `create a PR for [task description]`"
+            response += "\n• Merge a PR: `merge PR [number]`"
+            response += "\n• Revert a PR: `unmerge PR [number]`"
         
         # Send response in the same thread if applicable
         say(

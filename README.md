@@ -10,7 +10,9 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - 📝 Shows formatted conversation history with timestamps and usernames
 - ⚡️ Uses Socket Mode for real-time communication (no public URL needed)
 - 🔧 **NEW:** Creates GitHub pull requests when given a task
-- 🚀 **NEW:** Integrates with GitHub API for automated PR creation
+- 🔀 **NEW:** Merges pull requests directly from Slack
+- ↩️ **NEW:** Reverts/unmerges PRs by creating revert PRs
+- 🚀 **NEW:** Full GitHub API integration for PR lifecycle management
 
 ## Prerequisites
 
@@ -54,6 +56,7 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 1. Go to **"Event Subscriptions"** in the sidebar
 2. Toggle **"Enable Events"** to ON
 3. Under **"Subscribe to bot events"**, add:
+
    - `app_mention` - When the bot is mentioned
    - `message.channels` - To monitor channel messages (optional, for logging)
    - `message.groups` - To monitor private channels (optional)
@@ -78,11 +81,13 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 1. Clone or download this repository
 
 2. Install Python dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 3. Create a `.env` file in the project root with your credentials:
+
 ```bash
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 SLACK_APP_TOKEN=xapp-your-app-token-here
@@ -93,14 +98,16 @@ GITHUB_TOKEN=ghp_your-github-token-here
 GITHUB_REPO=username/repository-name
 ```
 
-   **Note:** GitHub integration is optional. See [GITHUB_SETUP.md](GITHUB_SETUP.md) for detailed setup instructions.
+**Note:** GitHub integration is optional. See [GITHUB_SETUP.md](GITHUB_SETUP.md) for detailed setup instructions.
 
 4. Run the bot:
+
 ```bash
 python slack_bot.py
 ```
 
 You should see:
+
 ```
 ⚡️ Starting Slack bot in Socket Mode...
 ⚡️ Bolt app is running!
@@ -165,10 +172,101 @@ The PR is ready for review! 🎉
 ```
 
 **Other PR command variations:**
+
 - `@BotName make a pull request for bug fix`
 - `@BotName open a PR to refactor database code`
 - `@BotName submit a PR for new feature`
 - `@BotName generate a pull request for documentation updates`
+
+### Merging Pull Requests
+
+Once a PR is created (or if you have existing PRs), you can merge them directly from Slack:
+
+```
+User: @ContextBot merge PR 42
+
+Bot: 🔄 Got it @User! Merging PR #42 using merge method...
+
+Please wait...
+
+[A moment later...]
+
+✅ Pull Request Merged Successfully!
+
+🔢 PR #: 42
+📋 Title: 🤖 Bot Task: adding user authentication
+🌿 Branch: bot-task-20251122-143045
+🔀 Merge Method: merge
+🔗 URL: https://github.com/yuktmitash21/slack-code/pull/42
+
+The changes have been merged to master! 🎉
+```
+
+**Merge command variations:**
+
+- `@BotName merge PR 42` - Standard merge
+- `@BotName merge #42` - Using # notation
+- `@BotName merge 42` - Simple format
+- `@BotName merge PR 42 squash` - Squash and merge
+- `@BotName merge PR 42 rebase` - Rebase and merge
+
+**Merge Methods:**
+
+- **merge** (default): Creates a merge commit
+- **squash**: Squashes all commits into one
+- **rebase**: Rebases and merges commits
+
+### Reverting/Unmerging Pull Requests
+
+If you need to undo a merged PR, you can create a revert PR:
+
+```
+User: @ContextBot unmerge PR 42
+
+Bot: 🔄 Got it @User! Creating a revert PR for #42...
+
+Please wait...
+
+[A moment later...]
+
+✅ Revert Pull Request Created Successfully!
+
+🔄 Reverting PR #: 42
+📋 Original Title: 🤖 Bot Task: adding user authentication
+🔗 Original PR: https://github.com/yuktmitash21/slack-code/pull/42
+
+**New Revert PR:**
+🔢 PR #: 45
+🌿 Branch: revert-pr-42-20251122-150045
+🔗 URL: https://github.com/yuktmitash21/slack-code/pull/45
+
+The revert PR is ready for review! You can now merge it to undo the original changes.
+
+💡 Tip: Merge it with @bot merge PR 45
+```
+
+**Unmerge command variations:**
+
+- `@BotName unmerge PR 42` - Create revert PR
+- `@BotName revert PR 42` - Same as unmerge
+- `@BotName unmerge #42` - Using # notation
+- `@BotName revert 42` - Simple format
+
+**How it works:**
+
+1. Clones the repository to a temporary directory
+2. Creates a new branch with name `revert-pr-{number}-{timestamp}`
+3. Executes `git revert -m 1 <merge_commit_sha>` to create actual revert commits
+4. Pushes the revert branch to GitHub
+5. Opens a new PR with the actual reverted code
+6. You can then merge the revert PR to complete the undo
+7. Cleans up temporary directory
+
+**Technical Details:**
+
+- Uses `gitpython` library for git operations
+- Properly handles merge commits with `-m 1` flag
+- Creates real revert commits that can be merged safely
 
 ## How It Works
 
@@ -177,6 +275,7 @@ The PR is ready for review! 🎉
 The bot uses two methods to gather context:
 
 1. **Channel Context** (`get_channel_context`):
+
    - Fetches up to 50 recent messages from the channel
    - Filters out bot messages and system messages
    - Formats messages with timestamps and usernames
@@ -225,6 +324,21 @@ slack-bot/
 - After adding scopes, reinstall the app to your workspace
 - The bot must be a member of the channel to read its history
 
+### Merge command fails
+
+- Verify the PR number exists and is correct
+- Check that the PR is not already merged or closed
+- Ensure the PR has no merge conflicts
+- Verify your GitHub token has write access to the repository
+- Make sure branch protection rules allow the merge
+
+### Unmerge/revert command fails
+
+- Verify the PR number exists and was merged
+- Only merged PRs can be reverted
+- Check your GitHub token has write access to create branches and PRs
+- If the revert PR is created but empty, you may need to manually add the revert commits
+
 ### Connection issues
 
 - Socket Mode requires a stable internet connection
@@ -271,14 +385,16 @@ def handle_reaction(event, say):
 
 ## GitHub PR Feature
 
-The bot can now create GitHub pull requests! Currently, it creates placeholder PRs with random changes to demonstrate the functionality. 
+The bot can now create GitHub pull requests! Currently, it creates placeholder PRs with random changes to demonstrate the functionality.
 
 **Current behavior:**
+
 - Creates a new branch
 - Makes a random change (adds comment to README, creates task log, or updates bot stats)
 - Opens a pull request with your task description
 
 **Future enhancements:**
+
 - Parse task descriptions to generate actual code
 - Integrate with AI/LLM for intelligent code generation
 - Read existing code and make contextual modifications
@@ -306,6 +422,7 @@ This project is open source and available under the MIT License.
 ## Support
 
 For issues with:
+
 - **Slack API**: Check [Slack API Documentation](https://api.slack.com/docs)
 - **slack-bolt**: See [Bolt for Python Documentation](https://slack.dev/bolt-python/concepts)
 - **This bot**: Open an issue in the repository
@@ -313,4 +430,3 @@ For issues with:
 ---
 
 Happy botting! 🤖
-

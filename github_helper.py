@@ -5,9 +5,10 @@ GitHub Helper Module for Creating Pull Requests
 import os
 import random
 import tempfile
+import shutil
 from datetime import datetime
 from github import Github, GithubException
-from git import Repo
+from git import Repo, GitCommandError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -306,4 +307,306 @@ Currently, this PR demonstrates the bot's ability to:
 *Generated automatically by Slack Bot 🚀*
 """
         return description
+    
+    def merge_pr(self, pr_number, merge_method="merge"):
+        """
+        Merge a pull request
+        
+        Args:
+            pr_number: PR number to merge (int or str)
+            merge_method: Merge method - "merge", "squash", or "rebase" (default: "merge")
+            
+        Returns:
+            dict with merge result or error
+        """
+        try:
+            pr_number = int(pr_number)
+            
+            # Get the pull request
+            pr = self.repo.get_pull(pr_number)
+            
+            # Check if PR is already merged
+            if pr.merged:
+                return {
+                    "success": False,
+                    "error": f"PR #{pr_number} is already merged"
+                }
+            
+            # Check if PR is closed
+            if pr.state == "closed":
+                return {
+                    "success": False,
+                    "error": f"PR #{pr_number} is closed and cannot be merged"
+                }
+            
+            # Check if PR is mergeable
+            if pr.mergeable is False:
+                return {
+                    "success": False,
+                    "error": f"PR #{pr_number} has merge conflicts and cannot be merged automatically"
+                }
+            
+            # Get PR details before merging
+            pr_title = pr.title
+            pr_branch = pr.head.ref
+            pr_url = pr.html_url
+            
+            # Merge the PR
+            merge_result = pr.merge(
+                commit_title=f"Merge pull request #{pr_number}",
+                merge_method=merge_method
+            )
+            
+            logger.info(f"PR #{pr_number} merged successfully: {merge_result.sha}")
+            
+            return {
+                "success": True,
+                "pr_number": pr_number,
+                "pr_title": pr_title,
+                "pr_url": pr_url,
+                "branch_name": pr_branch,
+                "merge_sha": merge_result.sha,
+                "merge_method": merge_method
+            }
+            
+        except GithubException as e:
+            logger.error(f"GitHub API error merging PR: {e}")
+            error_message = e.data.get('message', str(e)) if hasattr(e, 'data') else str(e)
+            return {
+                "success": False,
+                "error": f"GitHub API error: {error_message}"
+            }
+        except ValueError:
+            return {
+                "success": False,
+                "error": f"Invalid PR number: {pr_number}"
+            }
+        except Exception as e:
+            logger.error(f"Error merging PR: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def get_pr_info(self, pr_number):
+        """
+        Get information about a pull request
+        
+        Args:
+            pr_number: PR number to get info for
+            
+        Returns:
+            dict with PR info or error
+        """
+        try:
+            pr_number = int(pr_number)
+            pr = self.repo.get_pull(pr_number)
+            
+            return {
+                "success": True,
+                "pr_number": pr_number,
+                "title": pr.title,
+                "state": pr.state,
+                "merged": pr.merged,
+                "mergeable": pr.mergeable,
+                "url": pr.html_url,
+                "branch": pr.head.ref,
+                "base": pr.base.ref,
+                "user": pr.user.login,
+                "created_at": pr.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "body": pr.body or "No description provided"
+            }
+            
+        except GithubException as e:
+            return {
+                "success": False,
+                "error": f"GitHub API error: {e.data.get('message', str(e))}"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def create_revert_pr(self, pr_number):
+        """
+        Create a revert PR for an existing merged PR using actual git revert
+        
+        Args:
+            pr_number: PR number to revert (must be merged)
+            
+        Returns:
+            dict with revert PR details or error
+        """
+        temp_dir = None
+        try:
+            pr_number = int(pr_number)
+            
+            # Get the original pull request
+            original_pr = self.repo.get_pull(pr_number)
+            
+            # Check if PR is merged
+            if not original_pr.merged:
+                return {
+                    "success": False,
+                    "error": f"PR #{pr_number} is not merged yet. Only merged PRs can be reverted."
+                }
+            
+            # Get the merge commit
+            merge_commit_sha = original_pr.merge_commit_sha
+            
+            if not merge_commit_sha:
+                return {
+                    "success": False,
+                    "error": f"Could not find merge commit for PR #{pr_number}"
+                }
+            
+            # Get the default branch
+            default_branch = self.repo.default_branch
+            
+            # Create a new branch name for the revert
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            revert_branch_name = f"revert-pr-{pr_number}-{timestamp}"
+            
+            logger.info(f"Creating revert branch {revert_branch_name} to revert {merge_commit_sha}")
+            
+            # Clone the repository to a temporary directory
+            temp_dir = tempfile.mkdtemp()
+            logger.info(f"Cloning repository to {temp_dir}")
+            
+            # Clone with authentication
+            github_token = self.github._Github__requester.auth.token if hasattr(self.github._Github__requester.auth, 'token') else None
+            
+            if github_token:
+                # Use token authentication in clone URL
+                repo_url = f"https://{github_token}@github.com/{self.repo_name}.git"
+            else:
+                repo_url = f"https://github.com/{self.repo_name}.git"
+            
+            # Clone the repo
+            local_repo = Repo.clone_from(repo_url, temp_dir, branch=default_branch)
+            
+            # Configure git user for the commit
+            with local_repo.config_writer() as git_config:
+                git_config.set_value('user', 'email', 'slack-bot@automated.local')
+                git_config.set_value('user', 'name', 'Slack Bot')
+            
+            # Create and checkout the new revert branch
+            new_branch = local_repo.create_head(revert_branch_name)
+            new_branch.checkout()
+            
+            logger.info(f"Checked out branch {revert_branch_name}")
+            
+            # Perform the git revert
+            # Use -m 1 to specify the mainline parent (important for merge commits)
+            try:
+                local_repo.git.revert(merge_commit_sha, m=1, no_edit=True)
+                logger.info(f"Successfully reverted commit {merge_commit_sha}")
+            except GitCommandError as e:
+                logger.error(f"Git revert failed: {e}")
+                # Try with a custom commit message
+                try:
+                    local_repo.git.revert(
+                        merge_commit_sha, 
+                        m=1, 
+                        no_commit=True
+                    )
+                    # Manually commit
+                    local_repo.git.commit(
+                        '-m', 
+                        f"Revert PR #{pr_number}: {original_pr.title}\n\nThis reverts pull request #{pr_number}."
+                    )
+                    logger.info(f"Successfully reverted with manual commit")
+                except GitCommandError as e2:
+                    logger.error(f"Manual revert also failed: {e2}")
+                    raise
+            
+            # Push the branch to GitHub
+            logger.info(f"Pushing branch {revert_branch_name} to GitHub")
+            origin = local_repo.remote(name='origin')
+            origin.push(revert_branch_name)
+            
+            logger.info(f"Successfully pushed revert branch")
+            
+            # Create the revert pull request
+            revert_pr_title = f"Revert PR #{pr_number}: {original_pr.title}"
+            revert_pr_body = f"""## 🔄 Revert Pull Request
+
+This PR reverts the changes from PR #{pr_number} using `git revert`.
+
+### Original PR Details
+- **Title:** {original_pr.title}
+- **PR #:** {pr_number}
+- **URL:** {original_pr.html_url}
+- **Merged at:** {original_pr.merged_at.strftime("%Y-%m-%d %H:%M:%S") if original_pr.merged_at else "Unknown"}
+- **Merge commit:** `{merge_commit_sha}`
+
+### Reason for Revert
+Changes need to be undone as requested via Slack bot.
+
+### What This PR Does
+This PR contains a revert commit created with:
+```bash
+git revert -m 1 {merge_commit_sha}
+```
+
+This undoes all changes introduced by PR #{pr_number}.
+
+---
+
+*Generated automatically by Slack Bot 🤖*
+"""
+            
+            revert_pr = self.repo.create_pull(
+                title=revert_pr_title,
+                body=revert_pr_body,
+                head=revert_branch_name,
+                base=default_branch
+            )
+            
+            logger.info(f"Revert PR created: {revert_pr.html_url}")
+            
+            return {
+                "success": True,
+                "revert_pr_number": revert_pr.number,
+                "revert_pr_url": revert_pr.html_url,
+                "revert_branch_name": revert_branch_name,
+                "original_pr_number": pr_number,
+                "original_pr_title": original_pr.title,
+                "original_pr_url": original_pr.html_url,
+                "merge_commit_reverted": merge_commit_sha
+            }
+            
+        except GitCommandError as e:
+            logger.error(f"Git command error: {e}")
+            return {
+                "success": False,
+                "error": f"Git revert failed: {str(e)}"
+            }
+        except GithubException as e:
+            logger.error(f"GitHub API error creating revert PR: {e}")
+            error_message = e.data.get('message', str(e)) if hasattr(e, 'data') else str(e)
+            return {
+                "success": False,
+                "error": f"GitHub API error: {error_message}"
+            }
+        except ValueError:
+            return {
+                "success": False,
+                "error": f"Invalid PR number: {pr_number}"
+            }
+        except Exception as e:
+            logger.error(f"Error creating revert PR: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        finally:
+            # Clean up temporary directory
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                    logger.info(f"Cleaned up temporary directory {temp_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp directory: {e}")
 

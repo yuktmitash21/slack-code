@@ -90,6 +90,21 @@ GitHub integration enabled  # (if configured)
 @BotName open a PR to [task]
 ```
 
+### PR Merging
+```
+@BotName merge PR 42
+@BotName merge #42
+@BotName merge PR 42 squash
+@BotName merge PR 42 rebase
+```
+
+### PR Reverting/Unmerging
+```
+@BotName unmerge PR 42
+@BotName revert PR 42
+@BotName unmerge #42
+```
+
 ## Troubleshooting
 
 ### Bot doesn't start
@@ -112,6 +127,8 @@ GitHub integration enabled  # (if configured)
 
 - ✅ Bot responds with channel context
 - ✅ Bot creates placeholder PRs
+- ✅ Bot can merge PRs from Slack
+- ✅ Bot can revert/unmerge PRs from Slack
 - 🔜 Implement actual code generation logic
 - 🔜 Add AI integration for intelligent responses
 
