@@ -301,49 +301,108 @@ Remember: OUTPUT the code in your response, don't just say you created it!
         
         files = []
         response_str = str(response)
+        extracted_code_contents = set()  # Track code content we've already extracted
         
         logger.info("Attempting to parse response text for code blocks...")
         
+        # Method 0: Look for changeset format with file markers
+        # Pattern: 📄 File: path/to/file.py [NEW/MODIFIED]
+        changeset_pattern = r'📄\s*File:\s*([^\s\[]+(?:\.[a-zA-Z0-9]+)?)\s*\[(?:NEW|MODIFIED|DELETED)\][\s\S]*?```[\w]*\n(.*?)```'
+        changeset_matches = re.findall(changeset_pattern, response_str, re.DOTALL)
+        
+        if changeset_matches:
+            logger.info(f"Found {len(changeset_matches)} files in changeset format")
+            for filepath, code in changeset_matches:
+                filepath = filepath.strip()
+                code_stripped = code.strip()
+                if filepath and code_stripped:
+                    files.append({
+                        "path": filepath,
+                        "content": code_stripped,
+                        "description": f"Changeset file: {filepath}"
+                    })
+                    # Track this code content so we don't duplicate it
+                    extracted_code_contents.add(code_stripped)
+                    logger.info(f"Changeset extracted: {filepath} ({len(code_stripped)} chars)")
+            
+            # If we found changeset format, skip other methods to avoid duplicates
+            logger.info("Changeset format found, skipping generic code block extraction")
+            # Remove duplicates and return
+            seen_paths = set()
+            unique_files = []
+            for f in files:
+                if f['path'] not in seen_paths:
+                    seen_paths.add(f['path'])
+                    unique_files.append(f)
+            logger.info(f"Returning {len(unique_files)} unique files")
+            return unique_files
+        
         # Method 1: Look for markdown code blocks with file paths
         # Pattern: ```python\n# File: path/to/file.py\ncode...```
+        # Only run this if NO changeset format was found
         code_blocks = re.findall(r'```(?:\w+)?\n(.*?)```', response_str, re.DOTALL)
         logger.info(f"Found {len(code_blocks)} code blocks")
         
         for i, code in enumerate(code_blocks):
-            if code.strip():
-                # Try to extract filename from comments
-                filename_match = re.search(r'#\s*(?:File:|Filename:|Path:)\s*(.+)', code)
-                if filename_match:
-                    filename = filename_match.group(1).strip()
-                    # Remove the comment line from content
-                    code = re.sub(r'#\s*(?:File:|Filename:|Path:)\s*.+\n', '', code, count=1)
-                else:
-                    filename = f"generated_file_{i+1}.py"
+            code_stripped = code.strip()
+            if not code_stripped:
+                continue
+            
+            # Skip if we already extracted this code
+            if code_stripped in extracted_code_contents:
+                continue
                 
+            # Try to extract filename from comments
+            filename_match = re.search(r'#\s*(?:File:|Filename:|Path:)\s*(.+)', code)
+            if filename_match:
+                filename = filename_match.group(1).strip()
+                # Remove the comment line from content
+                code_stripped = re.sub(r'#\s*(?:File:|Filename:|Path:)\s*.+\n', '', code_stripped, count=1).strip()
+            else:
+                # No filename found, use generic name
+                filename = f"generated_file_{i+1}.py"
+            
+            # Don't add duplicate paths
+            if not any(f['path'] == filename for f in files):
                 files.append({
                     "path": filename,
-                    "content": code.strip(),
+                    "content": code_stripped,
                     "description": f"Code block {i+1}"
                 })
-                logger.info(f"Extracted: {filename} ({len(code)} chars)")
+                extracted_code_contents.add(code_stripped)
+                logger.info(f"Extracted: {filename} ({len(code_stripped)} chars)")
         
         # Method 2: Look for explicit file mentions with code
         # Pattern: "Here's the code for src/auth.py:" followed by code
         file_patterns = [
-            r'(?:Here\'s|Here is|Code for|File)\s+(?:the code for\s+)?([^\s:]+\.(?:py|js|ts|java|go|rs)):\s*```[\w]*\n(.*?)```',
-            r'`([^\s]+\.(?:py|js|ts|java|go|rs))`:\s*```[\w]*\n(.*?)```',
+            # Match: "Here's the code for src/auth.py:"
+            r'(?:Here\'s|Here is|Code for|File)\s+(?:the code for\s+)?([^\s:]+\.[a-zA-Z0-9]+):\s*```[\w]*\n(.*?)```',
+            # Match: "`src/auth.py`:"
+            r'`([^\s]+\.[a-zA-Z0-9]+)`:\s*```[\w]*\n(.*?)```',
+            # Match: "File: src/auth.py" or "Filename: src/auth.py"
+            r'(?:File|Filename):\s*([^\s\n]+\.[a-zA-Z0-9]+)[\s\n]+```[\w]*\n(.*?)```',
         ]
         
         for pattern in file_patterns:
             matches = re.findall(pattern, response_str, re.DOTALL | re.IGNORECASE)
             for filename, code in matches:
-                if filename and code.strip():
-                    files.append({
-                        "path": filename,
-                        "content": code.strip(),
-                        "description": f"Extracted from {filename}"
-                    })
-                    logger.info(f"Pattern match: {filename} ({len(code)} chars)")
+                filename = filename.strip()
+                code_stripped = code.strip()
+                
+                # Skip if already extracted
+                if code_stripped in extracted_code_contents:
+                    continue
+                    
+                if filename and code_stripped:
+                    # Don't add duplicate paths
+                    if not any(f['path'] == filename for f in files):
+                        files.append({
+                            "path": filename,
+                            "content": code_stripped,
+                            "description": f"Extracted from {filename}"
+                        })
+                        extracted_code_contents.add(code_stripped)
+                        logger.info(f"Pattern match: {filename} ({len(code_stripped)} chars)")
         
         # Method 3: Look for JSON structure
         try:
@@ -353,8 +412,12 @@ Remember: OUTPUT the code in your response, don't just say you created it!
                 if 'files' in data and isinstance(data['files'], list):
                     for file_data in data['files']:
                         if isinstance(file_data, dict):
-                            files.append(file_data)
-                            logger.info(f"JSON extracted: {file_data.get('path', 'unknown')}")
+                            content = file_data.get('content', '').strip()
+                            # Skip if already extracted
+                            if content and content not in extracted_code_contents:
+                                files.append(file_data)
+                                extracted_code_contents.add(content)
+                                logger.info(f"JSON extracted: {file_data.get('path', 'unknown')}")
         except Exception as e:
             logger.debug(f"JSON parsing failed: {e}")
         

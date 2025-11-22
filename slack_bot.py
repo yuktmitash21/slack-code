@@ -64,10 +64,15 @@ def _generate_changeset_preview(prompt: str, context: str) -> dict:
     """
     Generate a changeset preview using OpenAI (for conversation)
     This shows proposed changes to the user before PR creation
+    
+    Note: For preview, we use direct OpenAI for simplicity and speed.
+    For actual PR creation, we use SpoonOS's full CodingAgent with tools.
     """
     try:
         import openai
         import os
+        
+        logger.info("Generating changeset preview with OpenAI...")
         
         client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         
@@ -98,6 +103,8 @@ The user can refine these changes through conversation before creating the PR.
         
         response_text = response.choices[0].message.content
         
+        logger.info("Changeset preview generated successfully")
+        
         return {
             "success": True,
             "raw_response": response_text
@@ -105,6 +112,8 @@ The user can refine these changes through conversation before creating the PR.
         
     except Exception as e:
         logger.error(f"Error generating preview: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {
             "success": False,
             "error": str(e)
@@ -531,8 +540,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
     
     # Get AI response
     try:
-        # For conversational proposals, we'll use OpenAI to show changesets
-        # When creating the actual PR, we'll use AI agent (SpoonOS) for code generation
+        # Use OpenAI for fast changeset previews, SpoonOS for actual PR creation with tools
         
         # Fetch codebase context once and cache it (for conversation preview)
         # Safety check: add codebase_context if it doesn't exist (for old conversations)
@@ -616,14 +624,49 @@ Rules:
         })
         
         # Send response with instructions and Make PR button
-        blocks = [
-            {
+        # Split long messages into chunks (Slack limit: 3000 chars per block)
+        def split_message_into_chunks(message: str, max_length: int = 2900) -> list:
+            """Split message into chunks that fit Slack's block size limit"""
+            # Leave room for the user tag and formatting
+            chunks = []
+            current_chunk = ""
+            
+            for line in message.split('\n'):
+                # If adding this line would exceed limit, start new chunk
+                if len(current_chunk) + len(line) + 1 > max_length:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = line
+                else:
+                    if current_chunk:
+                        current_chunk += '\n' + line
+                    else:
+                        current_chunk = line
+            
+            # Add final chunk
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            return chunks if chunks else [message[:max_length]]
+        
+        # Create blocks with message chunks
+        full_message = f"<@{stored_user_id}> {ai_response}"
+        message_chunks = split_message_into_chunks(full_message, max_length=2900)
+        
+        blocks = []
+        
+        # Add message chunks as section blocks
+        for i, chunk in enumerate(message_chunks):
+            blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"<@{stored_user_id}> {ai_response}"
+                    "text": chunk
                 }
-            },
+            })
+        
+        # Add divider and button after all message chunks
+        blocks.extend([
             {
                 "type": "divider"
             },
@@ -652,7 +695,9 @@ Rules:
                     }
                 ]
             }
-        ]
+        ])
+        
+        logger.info(f"Sending response with {len(message_chunks)} message chunk(s)")
         
         say(
             text=f"<@{stored_user_id}> Proposed changeset ready! (see blocks for details)",
