@@ -560,11 +560,19 @@ IMPORTANT: You have access to ALL existing files above.
                 }
             
             # Create files in the repository
+            logger.info(f"=== CREATING FILES ON GITHUB ===")
+            logger.info(f"Total files to create: {len(result['files'])}")
+            
             files_created = []
-            for file_info in result["files"]:
+            for i, file_info in enumerate(result["files"]):
                 file_path = file_info["path"]
                 file_content = file_info["content"]
                 file_desc = file_info.get("description", "AI-generated code")
+                
+                logger.info(f"File {i+1}/{len(result['files'])}:")
+                logger.info(f"  Path: {file_path}")
+                logger.info(f"  Content length: {len(file_content)} chars")
+                logger.info(f"  Description: {file_desc}")
                 
                 try:
                     # Check if file exists in the repository
@@ -580,6 +588,7 @@ IMPORTANT: You have access to ALL existing files above.
                             branch=branch_name
                         )
                         files_created.append(f"Updated {file_path}")
+                        logger.info(f"  ✅ Updated existing file: {file_path}")
                     except:
                         # Create new file
                         self.repo.create_file(
@@ -589,11 +598,17 @@ IMPORTANT: You have access to ALL existing files above.
                             branch=branch_name
                         )
                         files_created.append(f"Created {file_path}")
+                        logger.info(f"  ✅ Created new file: {file_path}")
                     
-                    logger.info(f"Successfully created/updated {file_path}")
                 except Exception as e:
-                    logger.error(f"Failed to create {file_path}: {e}")
+                    logger.error(f"  ❌ Failed to create {file_path}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     continue
+            
+            logger.info(f"=== FILE CREATION COMPLETE ===")
+            logger.info(f"Successfully created/updated: {len(files_created)} file(s)")
+            logger.info(f"Files: {files_created}")
             
             if files_created:
                 return {
@@ -601,6 +616,7 @@ IMPORTANT: You have access to ALL existing files above.
                     "changes": f"AI-generated code: {', '.join(files_created)}"
                 }
             else:
+                logger.error("No files were successfully created!")
                 return {
                     "success": False,
                     "error": "Failed to create any files"

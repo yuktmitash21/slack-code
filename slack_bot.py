@@ -519,8 +519,10 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
         )
         _send_pr_result(result, pr_conversations[conversation_key]["initial_task"], say, thread_ts, stored_user_id)
         
-        # Clean up
-        del pr_conversations[conversation_key]
+        # Clean up conversation (button can still be clicked if this was triggered by text)
+        # Mark as complete so button handler knows it's already created
+        pr_conversations[conversation_key]["pr_created"] = True
+        pr_conversations[conversation_key]["pr_result"] = result
         return
     
     # Send initial message for new conversations
@@ -582,19 +584,27 @@ Respond with a CHANGESET in this format:
 [One-line summary of what this changeset does]
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-📄 File: path/to/file.py [NEW/MODIFIED/DELETED]
+📄 File: path/to/file1.html [NEW]
 
-```language
-[Complete file content for NEW/MODIFIED files]
-[Or explanation for DELETED files]
+```html
+[Complete file content]
 ```
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 Summary: N file(s) in this changeset
-📝 Files: file1.py, file2.js
+📄 File: path/to/file2.js [NEW]
+
+```javascript
+[Complete file content]
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Summary: 2 file(s) in this changeset
+📝 Files: path/to/file1.html, path/to/file2.js
 
 Rules:
 - Propose changes immediately, don't ask questions
+- For MULTIPLE files, create SEPARATE file sections (each with 📄 File: header)
+- Use the EXACT filename the user specified (e.g., snake.html not snake.md)
 - For MODIFIED files, show the COMPLETE updated file
 - For NEW files, show the complete new file
 - For DELETED files, explain what's being removed
@@ -1004,6 +1014,25 @@ def handle_make_pr_button_click(ack, body, client, logger):
         # Get conversation data
         conv = pr_conversations[thread_ts]
         stored_user_id = conv["user_id"]
+        
+        # Check if PR was already created (via text "make PR")
+        if conv.get("pr_created"):
+            result = conv.get("pr_result", {})
+            if result.get("success"):
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=f"<@{stored_user_id}> ℹ️ This PR was already created!\n\n🔢 PR #: {result.get('pr_number')}\n🔗 URL: {result.get('pr_url')}"
+                )
+            else:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=f"<@{stored_user_id}> ℹ️ PR creation was already attempted but failed. Please start a new conversation."
+                )
+            # Clean up now
+            del pr_conversations[thread_ts]
+            return
         
         # Send acknowledgment
         client.chat_postMessage(

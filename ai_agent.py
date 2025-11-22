@@ -310,23 +310,62 @@ Remember: OUTPUT the code in your response, don't just say you created it!
         changeset_pattern = r'📄\s*File:\s*([^\s\[]+(?:\.[a-zA-Z0-9]+)?)\s*\[(?:NEW|MODIFIED|DELETED)\][\s\S]*?```[\w]*\n(.*?)```'
         changeset_matches = re.findall(changeset_pattern, response_str, re.DOTALL)
         
+        # Method 0b: Also look for SpoonOS format without emoji/tags
+        # Pattern: File: path/to/file.py (followed by code block)
+        # More flexible pattern to handle various spacing
+        spoonos_pattern = r'File:\s*([^\s\n]+\.[a-zA-Z0-9]+)[\s\n]+```[\w]*\n(.*?)```'
+        spoonos_matches = re.findall(spoonos_pattern, response_str, re.DOTALL)
+        
+        # Also try without "File:" prefix - just filename before code block
+        # Pattern: filename.ext\n```
+        filename_only_pattern = r'(?:^|\n)([a-zA-Z0-9_/-]+\.[a-zA-Z0-9]+)[\s\n]+```[\w]*\n(.*?)```'
+        filename_only_matches = re.findall(filename_only_pattern, response_str, re.DOTALL | re.MULTILINE)
+        
+        logger.info(f"Searching for changeset format files...")
+        logger.info(f"Response length: {len(response_str)} chars")
+        logger.info(f"Found {len(changeset_matches)} changeset matches (with emoji)")
+        logger.info(f"Found {len(spoonos_matches)} SpoonOS format matches (File: filename)")
+        logger.info(f"Found {len(filename_only_matches)} filename-only matches")
+        
+        # Combine all patterns (prioritize specific formats)
+        all_matches = []
+        
         if changeset_matches:
-            logger.info(f"Found {len(changeset_matches)} files in changeset format")
-            for filepath, code in changeset_matches:
+            logger.info(f"=== CHANGESET FORMAT DETECTED (with emoji) ===")
+            all_matches.extend(changeset_matches)
+        
+        if spoonos_matches:
+            logger.info(f"=== SPOONOS FORMAT DETECTED (File: filename) ===")
+            all_matches.extend(spoonos_matches)
+        
+        # Only use filename-only matches if no other format was found
+        if not all_matches and filename_only_matches:
+            logger.info(f"=== FILENAME-ONLY FORMAT DETECTED ===")
+            all_matches.extend(filename_only_matches)
+        
+        if all_matches:
+            for i, (filepath, code) in enumerate(all_matches):
                 filepath = filepath.strip()
                 code_stripped = code.strip()
+                logger.info(f"Match {i+1}:")
+                logger.info(f"  Filepath: '{filepath}'")
+                logger.info(f"  Code length: {len(code_stripped)} chars")
+                logger.info(f"  Code preview: {code_stripped[:100]}...")
+                
                 if filepath and code_stripped:
                     files.append({
                         "path": filepath,
                         "content": code_stripped,
-                        "description": f"Changeset file: {filepath}"
+                        "description": f"AI-generated file: {filepath}"
                     })
                     # Track this code content so we don't duplicate it
                     extracted_code_contents.add(code_stripped)
-                    logger.info(f"Changeset extracted: {filepath} ({len(code_stripped)} chars)")
+                    logger.info(f"  ✅ Added to files list")
+                else:
+                    logger.warning(f"  ❌ Skipped (empty filepath or code)")
             
-            # If we found changeset format, skip other methods to avoid duplicates
-            logger.info("Changeset format found, skipping generic code block extraction")
+            # If we found files with explicit filenames, skip other methods to avoid duplicates
+            logger.info("Explicit file format found, skipping generic code block extraction")
             # Remove duplicates and return
             seen_paths = set()
             unique_files = []
