@@ -28,15 +28,23 @@ app = App(
     signing_secret=os.environ.get("SLACK_SIGNING_SECRET")
 )
 
+# Store ongoing conversations for PR creation
+# Format: {user_id: {thread_ts: conversation_data}}
+pr_conversations = {}
+
 # Initialize GitHub helper (if token is available)
 github_helper = None
 if os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_REPO"):
     try:
+        # Check if AI code generation should be enabled
+        use_ai = os.environ.get("USE_AI_CODE_GENERATION", "true").lower() == "true"
+        
         github_helper = GitHubPRHelper(
             github_token=os.environ.get("GITHUB_TOKEN"),
-            repo_name=os.environ.get("GITHUB_REPO")
+            repo_name=os.environ.get("GITHUB_REPO"),
+            use_ai=use_ai
         )
-        logger.info("GitHub integration enabled")
+        logger.info(f"GitHub integration enabled (AI code generation: {use_ai})")
     except Exception as e:
         logger.warning(f"GitHub integration failed to initialize: {e}")
 else:
@@ -252,15 +260,46 @@ def detect_unmerge_command(message_text):
     return {'is_unmerge_command': False}
 
 
-def handle_pr_creation(user_id, task_description, say, thread_ts):
+def is_ai_asking_question(response_text):
     """
-    Handle the creation of a GitHub pull request
+    Detect if the AI is asking for more information
+    
+    Args:
+        response_text: AI response text
+        
+    Returns:
+        bool: True if AI is asking a question
+    """
+    # Look for question indicators
+    question_indicators = [
+        "need more",
+        "please provide",
+        "can you provide",
+        "could you clarify",
+        "what kind of",
+        "which",
+        "specify",
+        "additional information",
+        "more details",
+        "tell me more",
+        "?",  # Ends with question mark
+    ]
+    
+    text_lower = response_text.lower()
+    return any(indicator in text_lower for indicator in question_indicators)
+
+
+def handle_pr_creation(user_id, task_description, say, thread_ts, client=None, channel_id=None):
+    """
+    Handle the creation of a GitHub pull request with conversational AI
     
     Args:
         user_id: Slack user ID
         task_description: Description of the task
         say: Slack say function
         thread_ts: Thread timestamp
+        client: Slack client (for thread tracking)
+        channel_id: Channel ID
     """
     if not github_helper:
         say(
@@ -269,15 +308,99 @@ def handle_pr_creation(user_id, task_description, say, thread_ts):
         )
         return
     
-    # Send acknowledgment
+    # Initialize conversation state
+    conversation_key = f"{user_id}:{thread_ts}"
+    
+    if conversation_key not in pr_conversations:
+        pr_conversations[conversation_key] = {
+            "messages": [],
+            "task_description": task_description,
+            "user_id": user_id,
+            "thread_ts": thread_ts,
+            "channel_id": channel_id
+        }
+    
+    # Add user message to conversation history
+    pr_conversations[conversation_key]["messages"].append({
+        "role": "user",
+        "content": task_description
+    })
+    
+    # Send initial acknowledgment
     say(
-        text=f"🤖 Got it <@{user_id}>! Creating a pull request for: *{task_description}*\n\nPlease wait...",
+        text=f"🤖 Hi <@{user_id}>! I'll help you create a PR for: *{task_description}*\n\nLet me analyze what's needed...",
         thread_ts=thread_ts
     )
     
-    # Create the PR
-    result = github_helper.create_random_pr(task_description)
+    # Check if AI agent is available
+    if not github_helper.use_ai or not github_helper.ai_generator:
+        # No AI, create PR immediately with placeholder
+        say(
+            text=f"Creating PR with placeholder changes (AI not available)...",
+            thread_ts=thread_ts
+        )
+        result = github_helper.create_random_pr(task_description)
+        _send_pr_result(result, task_description, say, thread_ts, user_id)
+        return
     
+    # Get AI response
+    try:
+        # Build conversation context
+        conversation_history = pr_conversations[conversation_key]["messages"]
+        full_context = "\n\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation_history])
+        
+        ai_result = github_helper.ai_generator.generate_code_sync(
+            task_description=full_context,
+            context=f"Repository: {github_helper.repo_name}"
+        )
+        
+        if not ai_result.get("success"):
+            say(
+                text=f"❌ AI analysis failed: {ai_result.get('error')}\n\nShould I create a placeholder PR instead?",
+                thread_ts=thread_ts
+            )
+            return
+        
+        ai_response = ai_result.get("raw_response", "")
+        
+        # Check if AI is asking for more information
+        if is_ai_asking_question(ai_response):
+            # Store AI response
+            pr_conversations[conversation_key]["messages"].append({
+                "role": "assistant",
+                "content": ai_response
+            })
+            
+            # Ask user for more info
+            say(
+                text=f"💭 {ai_response}\n\n_Reply with more details, or say **'create PR anyway'** to proceed with what I have._",
+                thread_ts=thread_ts
+            )
+            return
+        
+        # AI has enough info, create the PR
+        say(
+            text=f"✅ I have enough information! Creating the pull request now...",
+            thread_ts=thread_ts
+        )
+        
+        result = github_helper.create_random_pr(task_description)
+        _send_pr_result(result, task_description, say, thread_ts, user_id)
+        
+        # Clean up conversation
+        if conversation_key in pr_conversations:
+            del pr_conversations[conversation_key]
+        
+    except Exception as e:
+        logger.error(f"Error in conversational PR creation: {e}")
+        say(
+            text=f"❌ Error: {str(e)}\n\nShould I create a placeholder PR instead?",
+            thread_ts=thread_ts
+        )
+
+
+def _send_pr_result(result, task_description, say, thread_ts, user_id):
+    """Helper to send PR creation result"""
     if result["success"]:
         response = f"""✅ *Pull Request Created Successfully!*
 
@@ -442,7 +565,28 @@ def handle_app_mention(event, client, say, logger):
         
         if pr_check['is_pr_command']:
             logger.info(f"PR creation requested: {pr_check['task_description']}")
-            handle_pr_creation(user_id, pr_check['task_description'], say, thread_ts)
+            handle_pr_creation(user_id, pr_check['task_description'], say, thread_ts, client, channel_id)
+            return
+        
+        # Check if this is a continuation of a PR conversation
+        conversation_key = f"{user_id}:{thread_ts}"
+        if conversation_key in pr_conversations:
+            logger.info(f"Continuing PR conversation for {user_id}")
+            
+            # Check if user wants to create PR anyway
+            if "create pr anyway" in message_text.lower() or "proceed" in message_text.lower():
+                conv = pr_conversations[conversation_key]
+                say(
+                    text=f"✅ Understood! Creating the PR with the information I have...",
+                    thread_ts=thread_ts
+                )
+                result = github_helper.create_random_pr(conv["task_description"])
+                _send_pr_result(result, conv["task_description"], say, thread_ts, user_id)
+                del pr_conversations[conversation_key]
+                return
+            
+            # Continue the conversation
+            handle_pr_creation(user_id, message_text, say, thread_ts, client, channel_id)
             return
         
         # Check if this is a merge PR command

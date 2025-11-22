@@ -13,21 +13,45 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Try to import AI agent
+try:
+    from ai_agent import get_ai_code_generator
+    AI_AGENT_AVAILABLE = True
+except ImportError:
+    AI_AGENT_AVAILABLE = False
+    logger.info("AI agent not available. Using placeholder code generation.")
+
 
 class GitHubPRHelper:
     """Helper class for GitHub PR operations"""
     
-    def __init__(self, github_token, repo_name):
+    def __init__(self, github_token, repo_name, use_ai=True):
         """
         Initialize GitHub PR Helper
         
         Args:
             github_token: GitHub Personal Access Token
             repo_name: Repository name in format 'owner/repo'
+            use_ai: Whether to use AI agent for code generation (default: True)
         """
         self.github = Github(github_token)
         self.repo_name = repo_name
         self.repo = self.github.get_repo(repo_name)
+        self.use_ai = use_ai and AI_AGENT_AVAILABLE
+        
+        # Initialize AI agent if available
+        self.ai_generator = None
+        if self.use_ai:
+            try:
+                self.ai_generator = get_ai_code_generator()
+                if self.ai_generator:
+                    logger.info("AI code generation enabled")
+                else:
+                    logger.info("AI code generation disabled (no API key)")
+                    self.use_ai = False
+            except Exception as e:
+                logger.warning(f"Failed to initialize AI generator: {e}")
+                self.use_ai = False
         
     def create_random_pr(self, task_description=""):
         """
@@ -101,7 +125,7 @@ class GitHubPRHelper:
     
     def _make_random_change(self, branch_name, task_description):
         """
-        Make a random change to demonstrate PR functionality
+        Make changes using AI or fallback to random changes
         
         Args:
             branch_name: Name of the branch to commit to
@@ -111,7 +135,20 @@ class GitHubPRHelper:
             dict with change details
         """
         try:
-            # Different types of random changes we can make
+            # Try AI-generated code first
+            if self.use_ai and self.ai_generator:
+                logger.info("Attempting AI code generation...")
+                try:
+                    result = self._create_ai_generated_code(branch_name, task_description)
+                    if result["success"]:
+                        return result
+                    else:
+                        logger.warning(f"AI generation failed: {result.get('error')}, falling back to placeholder")
+                except Exception as e:
+                    logger.warning(f"AI generation error: {e}, falling back to placeholder")
+            
+            # Fallback to random placeholder changes
+            logger.info("Using placeholder code generation")
             change_options = [
                 self._add_comment_to_readme,
                 self._create_task_log_file,
@@ -124,6 +161,87 @@ class GitHubPRHelper:
             
         except Exception as e:
             logger.error(f"Error making change: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _create_ai_generated_code(self, branch_name, task_description):
+        """
+        Create code using AI agent
+        
+        Args:
+            branch_name: Name of the branch to commit to
+            task_description: Task description from Slack
+            
+        Returns:
+            dict with change details
+        """
+        try:
+            # Get repository context
+            repo_context = f"Repository: {self.repo_name}\nLanguage: Python\nBranch: {branch_name}"
+            
+            # Generate code using AI
+            logger.info(f"Generating code with AI for: {task_description}")
+            result = self.ai_generator.generate_code_sync(
+                task_description=task_description,
+                context=repo_context
+            )
+            
+            if not result.get("success") or not result.get("files"):
+                return {
+                    "success": False,
+                    "error": result.get("error", "No files generated")
+                }
+            
+            # Create files in the repository
+            files_created = []
+            for file_info in result["files"]:
+                file_path = file_info["path"]
+                file_content = file_info["content"]
+                file_desc = file_info.get("description", "AI-generated code")
+                
+                try:
+                    # Check if file exists
+                    try:
+                        existing_file = self.repo.get_contents(file_path, ref=branch_name)
+                        # Update existing file
+                        self.repo.update_file(
+                            path=file_path,
+                            message=f"🤖 Update {file_path}: {task_description[:50]}",
+                            content=file_content,
+                            sha=existing_file.sha,
+                            branch=branch_name
+                        )
+                        files_created.append(f"Updated {file_path}")
+                    except:
+                        # Create new file
+                        self.repo.create_file(
+                            path=file_path,
+                            message=f"🤖 Create {file_path}: {task_description[:50]}",
+                            content=file_content,
+                            branch=branch_name
+                        )
+                        files_created.append(f"Created {file_path}")
+                    
+                    logger.info(f"Successfully created/updated {file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to create {file_path}: {e}")
+                    continue
+            
+            if files_created:
+                return {
+                    "success": True,
+                    "changes": f"AI-generated code: {', '.join(files_created)}"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to create any files"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in AI code generation: {e}")
             return {
                 "success": False,
                 "error": str(e)

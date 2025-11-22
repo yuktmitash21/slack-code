@@ -4,3 +4,9 @@ python-dotenv==1.0.0
 PyGithub==2.1.1
 gitpython==3.1.40
 
+# Optional: For AI code generation
+# Install SpoonOS separately with:
+# pip install git+https://github.com/xspoonai/spoonos.git
+# or follow: https://xspoonai.github.io/docs/getting-started/installation/
+openai>=1.0.0
+

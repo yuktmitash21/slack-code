@@ -1,0 +1,16 @@
+# Optional AI Code Generation Requirements
+# Install these only if you want AI-powered code generation
+
+# Install SpoonOS from GitHub
+# git+https://github.com/xspoonai/spoonos.git
+
+# LLM Providers (choose one or more)
+openai>=1.0.0
+anthropic>=0.18.0
+
+# Alternative installation if the above doesn't work:
+# Clone and install manually:
+# git clone https://github.com/xspoonai/spoonos.git
+# cd spoonos
+# pip install -e .
+

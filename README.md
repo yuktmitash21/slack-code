@@ -12,6 +12,7 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - 🔧 **NEW:** Creates GitHub pull requests when given a task
 - 🔀 **NEW:** Merges pull requests directly from Slack
 - ↩️ **NEW:** Reverts/unmerges PRs by creating revert PRs
+- 🤖 **NEW:** AI-powered code generation using SpoonOS framework
 - 🚀 **NEW:** Full GitHub API integration for PR lifecycle management
 
 ## Prerequisites
@@ -19,6 +20,7 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - Python 3.8 or higher
 - A Slack workspace where you have permission to install apps
 - (Optional) A GitHub account and repository for PR creation feature
+- (Optional) OpenAI or Anthropic API key for AI code generation
 
 ## Setup Instructions
 
@@ -296,12 +298,16 @@ The bot uses two methods to gather context:
 slack-bot/
 ├── slack_bot.py          # Main bot application
 ├── github_helper.py      # GitHub PR creation logic
+├── ai_agent.py           # AI code generation (SpoonOS)
 ├── requirements.txt      # Python dependencies
 ├── .env                  # Environment variables (create this)
 ├── .gitignore           # Git ignore file
 ├── README.md            # This file
 ├── SETUP_GUIDE.md       # Detailed Slack setup guide
-└── GITHUB_SETUP.md      # GitHub integration setup guide
+├── GITHUB_SETUP.md      # GitHub integration setup guide
+├── AI_AGENT_SETUP.md    # AI code generation setup
+├── COMMANDS.md          # Command reference
+└── QUICK_START.md       # Quick start guide
 ```
 
 ## Troubleshooting
@@ -407,13 +413,14 @@ See [GITHUB_SETUP.md](GITHUB_SETUP.md) for complete setup instructions.
 Feel free to fork this project and customize it for your needs. Some ideas for enhancements:
 
 - ✅ **GitHub PR creation** (implemented!)
-- Add AI/LLM integration to generate intelligent code based on context
+- ✅ **AI code generation with SpoonOS** (implemented!)
 - Store conversation history in a database
 - Add sentiment analysis
 - Implement custom commands
 - Add support for direct messages
-- Parse task descriptions to generate actual code changes
+- Enhanced AI with deeper repository analysis
 - Add automated testing before PR creation
+- Integrate more SpoonOS tools (crypto, DeFi, etc.)
 
 ## License
 

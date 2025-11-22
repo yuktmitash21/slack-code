@@ -9,6 +9,10 @@ cd /Users/yuktmitash/Documents/slack-bot
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# Optional: Install SpoonOS for AI code generation
+pip install git+https://github.com/xspoonai/spoonos.git
+pip install openai
 ```
 
 ### 2. Create .env File
@@ -24,6 +28,11 @@ SLACK_SIGNING_SECRET=your-signing-secret-here
 # Optional: GitHub PR Creation
 GITHUB_TOKEN=ghp_your-github-token-here
 GITHUB_REPO=yuktmitash21/slack-code
+
+# Optional: AI Code Generation
+USE_AI_CODE_GENERATION=true
+OPENAI_API_KEY=sk-your-openai-api-key-here
+OPENAI_MODEL=gpt-4o
 ```
 
 ### 3. Get Slack Tokens
@@ -126,11 +135,12 @@ GitHub integration enabled  # (if configured)
 ## What's Next?
 
 - ✅ Bot responds with channel context
-- ✅ Bot creates placeholder PRs
+- ✅ Bot creates PRs with AI-generated code
 - ✅ Bot can merge PRs from Slack
 - ✅ Bot can revert/unmerge PRs from Slack
-- 🔜 Implement actual code generation logic
-- 🔜 Add AI integration for intelligent responses
+- ✅ AI code generation using SpoonOS
+- 🔜 Enhanced AI with repository analysis
+- 🔜 Automated testing integration
 
 Happy botting! 🚀
 
