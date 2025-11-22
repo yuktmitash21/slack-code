@@ -59,6 +59,54 @@ def is_ready_to_create_pr(message_text):
     text_lower = message_text.lower()
     return any(phrase in text_lower for phrase in create_pr_phrases)
 
+
+def format_changeset_response(ai_response, is_initial=False):
+    """
+    Format AI response as a clear changeset
+    
+    Args:
+        ai_response: Raw AI response
+        is_initial: Whether this is the initial response
+        
+    Returns:
+        Formatted changeset string
+    """
+    import re
+    
+    # Add header
+    if is_initial:
+        header = "📝 **PROPOSED CHANGESET**\n\n"
+    else:
+        header = "📝 **UPDATED CHANGESET**\n\n"
+    
+    # Ensure response is string
+    response_text = str(ai_response)
+    
+    # Count files
+    file_patterns = [
+        r'File:\s+([\w/\.-]+)',  # File: path/to/file.py
+        r'📄\s+\*\*File:\s+([\w/\.-]+)',  # 📄 **File: path/to/file.py**
+        r'`([\w/\.-]+\.(?:py|js|ts|java|go|rs|cpp|c|h|rb|php))`'  # `file.py`
+    ]
+    
+    files_found = set()
+    for pattern in file_patterns:
+        matches = re.findall(pattern, response_text)
+        files_found.update(matches)
+    
+    file_count = len(files_found)
+    
+    # Build formatted response
+    formatted = header + response_text
+    
+    # Add summary footer
+    footer = f"\n\n{'━'*40}\n📊 **Summary**: {file_count} file(s) in this changeset"
+    if file_count > 0:
+        footer += f"\n📝 Files: {', '.join(sorted(files_found))}"
+    formatted += footer
+    
+    return formatted, file_count
+
 # Initialize GitHub helper (if token is available)
 github_helper = None
 if os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_REPO"):
@@ -346,7 +394,8 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             "user_id": user_id,
             "thread_ts": thread_ts,
             "channel_id": channel_id,
-            "plan": None
+            "plan": None,
+            "codebase_context": None  # Will be fetched once and cached
         }
     
     # Always use the stored user_id to tag
@@ -381,7 +430,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
     # Send initial message for new conversations
     if is_initial:
         say(
-            text=f"<@{stored_user_id}> 🤖 Hi! I'll help you create a PR for: *{message_text}*\n\nLet me understand what you need...",
+            text=f"<@{stored_user_id}> 🤖 I'll propose a changeset for:\n> {message_text}\n\n📚 Reading codebase and generating changes...",
             thread_ts=thread_ts
         )
     
@@ -395,27 +444,82 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
     
     # Get AI response
     try:
+        # Fetch codebase context once and cache it
+        if pr_conversations[conversation_key]["codebase_context"] is None:
+            logger.info("Fetching full codebase context for conversation...")
+            say(
+                text=f"<@{stored_user_id}> 📚 Reading full codebase...",
+                thread_ts=thread_ts
+            )
+            try:
+                # Get the default branch
+                default_branch = github_helper.repo.default_branch
+                codebase_context = github_helper._get_full_codebase_context(default_branch)
+                pr_conversations[conversation_key]["codebase_context"] = codebase_context
+                logger.info(f"Codebase context cached: {len(codebase_context)} chars")
+            except Exception as e:
+                logger.error(f"Error fetching codebase context: {e}")
+                pr_conversations[conversation_key]["codebase_context"] = f"Repository: {github_helper.repo_name}\n\nError reading codebase: {str(e)}"
+        
         # Build conversation context
         conversation_history = pr_conversations[conversation_key]["messages"]
         full_context = "\n\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation_history])
         
-        # Use AI to plan (not create yet)
-        planning_prompt = f"""Task: {full_context}
+        # Use AI to propose concrete changes
+        # Make the prompt very explicit about changeset format
+        planning_prompt = f"""You are reviewing the FULL CODEBASE and proposing changes.
 
-Context: Repository {github_helper.repo_name}
+CONVERSATION:
+{full_context}
 
-Analyze this task and respond with:
-1. What you understand the user wants
-2. What files/changes you would create
-3. Any clarifying questions (if needed)
+YOUR TASK: Output a CONCRETE CHANGESET showing EXACTLY what code you will create or modify.
 
-DO NOT create code yet. Just discuss the plan with the user.
-If you have questions, ask them. If you understand everything, describe what you'll build.
+REQUIRED FORMAT (follow this structure EXACTLY):
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 **CHANGESET SUMMARY**
+Brief overview of what this changeset accomplishes
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 **File: path/to/file1.py** [NEW] or [MODIFIED]
+
+```python
+# Complete, working code here
+def example_function():
+    # Full implementation, not a stub
+    return "actual code"
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 **File: path/to/file2.py** [NEW] or [MODIFIED]
+
+```python
+# Complete, working code here
+class ExampleClass:
+    def __init__(self):
+        # Full implementation
+        pass
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CRITICAL RULES:
+1. Show COMPLETE, WORKING CODE - no placeholders like "# implementation here"
+2. Use the file paths, imports, and patterns from the CODEBASE CONTEXT you have
+3. NO questions - only propose concrete code
+4. If you make assumptions, state them in 1 line then show code
+5. EVERY file must have complete implementation
+6. Match the existing code style from the repository
+
+User will provide feedback to modify this changeset.
 """
+        
+        # Use the cached full codebase context
+        full_codebase_context = pr_conversations[conversation_key]["codebase_context"]
         
         ai_result = github_helper.ai_generator.generate_code_sync(
             task_description=planning_prompt,
-            context=f"Repository: {github_helper.repo_name}"
+            context=full_codebase_context
         )
         
         if not ai_result.get("success"):
@@ -433,9 +537,68 @@ If you have questions, ask them. If you understand everything, describe what you
             "content": ai_response
         })
         
-        # Send response with instructions
+        # Format as a clear changeset
+        formatted_response, file_count = format_changeset_response(ai_response, is_initial=is_initial)
+        
+        # Truncate if too long for Slack (3000 char limit)
+        display_response = formatted_response
+        if len(formatted_response) > 2800:
+            # Find the summary footer
+            footer_match = re.search(r'\n━+\n📊.*$', formatted_response, re.DOTALL)
+            footer = footer_match.group(0) if footer_match else ""
+            
+            # Truncate but keep footer
+            truncated_length = len(formatted_response) - 2800
+            display_response = formatted_response[:2800] + f"\n\n...(truncated, {truncated_length} more chars)\n" + footer
+        
+        # Send response with button and clear visual structure
         say(
-            text=f"<@{stored_user_id}> {ai_response}\n\n_Reply to add more details, or say **'make PR'** when ready to create it!_",
+            text=f"<@{stored_user_id}> {display_response}",
+            blocks=[
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"{'🆕 ' if is_initial else '🔄 '}Proposed Changeset ({file_count} file{'s' if file_count != 1 else ''})",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"<@{stored_user_id}>\n\n{display_response}"
+                    }
+                },
+                {
+                    "type": "divider"
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "🚀 Make PR with These Changes",
+                                "emoji": True
+                            },
+                            "style": "primary",
+                            "value": thread_ts,
+                            "action_id": "make_pr_button"
+                        }
+                    ]
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "💬 _Reply with feedback to modify this changeset_ • 🚀 _Click button to create PR_"
+                        }
+                    ]
+                }
+            ],
             thread_ts=thread_ts
         )
         
@@ -692,6 +855,81 @@ def handle_app_mention(event, client, say, logger):
             text=f"Sorry, I encountered an error: {str(e)}",
             thread_ts=event.get("thread_ts")
         )
+
+
+@app.action("make_pr_button")
+def handle_make_pr_button(ack, body, client, logger):
+    """
+    Handle the Make PR button click
+    """
+    ack()  # Acknowledge the action
+    
+    user_id = body["user"]["id"]
+    thread_ts = body["actions"][0]["value"]
+    channel_id = body["channel"]["id"]
+    
+    logger.info(f"Make PR button clicked by {user_id} for thread {thread_ts}")
+    
+    # Check if conversation exists
+    if thread_ts not in pr_conversations:
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=f"<@{user_id}> ❌ Conversation not found. Please start a new PR request."
+        )
+        return
+    
+    # Get conversation data
+    conv = pr_conversations[thread_ts]
+    stored_user_id = conv["user_id"]
+    
+    # Send acknowledgment
+    client.chat_postMessage(
+        channel=channel_id,
+        thread_ts=thread_ts,
+        text=f"<@{stored_user_id}> ✅ Perfect! Creating the pull request now..."
+    )
+    
+    # Get all conversation history
+    all_messages = "\n\n".join([
+        f"{msg['role']}: {msg['content']}" 
+        for msg in conv["messages"]
+    ])
+    
+    # Create the PR
+    result = github_helper.create_random_pr(all_messages)
+    
+    # Send result
+    if result["success"]:
+        response = f"""<@{stored_user_id}> ✅ *Pull Request Created Successfully!*
+
+📋 *Task:* {conv['initial_task']}
+🔢 *PR #:* {result['pr_number']}
+🌿 *Branch:* `{result['branch_name']}`
+🔗 *URL:* {result['pr_url']}
+
+📝 *Changes:* {result['changes']}
+
+The PR is ready for review! 🎉
+
+💡 *Tip:* You can merge it with `@bot merge PR {result['pr_number']}`
+"""
+    else:
+        response = f"""<@{stored_user_id}> ❌ *Failed to Create Pull Request*
+
+*Error:* {result['error']}
+
+Please check the logs and try again.
+"""
+    
+    client.chat_postMessage(
+        channel=channel_id,
+        thread_ts=thread_ts,
+        text=response
+    )
+    
+    # Clean up conversation
+    del pr_conversations[thread_ts]
 
 
 @app.event("message")

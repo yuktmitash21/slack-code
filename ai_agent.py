@@ -89,20 +89,36 @@ if SPOONOS_AVAILABLE:
 You are an expert software engineer AI assistant built with SpoonOS framework.
 Your role is to generate high-quality, production-ready code based on task descriptions.
 
+You have access to the FULL CODEBASE in your context. Use this to:
+- Understand the existing code structure and patterns
+- Maintain consistency with the current codebase style
+- Properly integrate with existing modules and dependencies
+- Avoid conflicts with existing code
+- Reuse and extend existing utilities
+
 When given a coding task, you should:
-1. Understand the requirements clearly
-2. Generate appropriate code files with proper structure
-3. Follow best practices and coding standards
-4. Include necessary imports, error handling, and documentation
-5. Provide clear, maintainable code
+1. Review the existing codebase context provided
+2. Understand how your changes fit into the overall architecture
+3. Generate appropriate code files with proper structure
+4. Follow the existing code style and best practices
+5. Include necessary imports (based on what exists in the codebase)
+6. Add proper error handling and documentation
+7. Make your code integrate seamlessly with existing code
 
 Always use the generate_code tool to create code files with:
-- Appropriate file paths (e.g., src/auth.py, utils/helpers.js)
+- Appropriate file paths that match the repository structure
 - Complete, functional code
-- Inline comments explaining complex logic
-- Proper formatting and indentation
+- Imports that match the existing codebase conventions
+- Inline comments explaining key logic
+- Proper formatting and indentation consistent with the codebase
+
+When modifying existing files:
+- Preserve existing functionality unless explicitly asked to change it
+- Maintain the same coding style
+- Keep existing imports and add new ones as needed
 
 Be specific and practical. Generate actual implementation code, not just stubs.
+Propose concrete changes as diffs/changesets that can be directly applied.
 """
         
         available_tools: ToolManager = ToolManager([
@@ -121,11 +137,11 @@ Be specific and practical. Generate actual implementation code, not just stubs.
 
 
 class AICodeGenerator:
-    """High-level interface for AI code generation using SpoonOS"""
+    """High-level interface for AI code generation using SpoonOS or direct OpenAI"""
     
     def __init__(self, llm_provider: str = "openai", model_name: str = "gpt-4o"):
         """
-        Initialize AI Code Generator with SpoonOS
+        Initialize AI Code Generator with SpoonOS or fallback to direct OpenAI
         
         Args:
             llm_provider: LLM provider (openai, anthropic, gemini, deepseek, openrouter)
@@ -134,10 +150,11 @@ class AICodeGenerator:
         self.llm_provider = llm_provider
         self.model_name = model_name
         self.agent = None
+        self.use_direct_openai = False
         
         if not SPOONOS_AVAILABLE:
-            logger.error("SpoonOS not available. AI code generation disabled.")
-            logger.error("Install SpoonOS to enable AI features")
+            logger.warning("SpoonOS not available. Trying direct OpenAI fallback...")
+            self.use_direct_openai = True
             return
         
         try:
@@ -145,12 +162,14 @@ class AICodeGenerator:
             logger.info(f"✅ AI Coding Agent initialized with SpoonOS using {llm_provider}/{model_name}")
         except Exception as e:
             logger.error(f"Failed to initialize SpoonOS agent: {e}")
+            logger.warning("Falling back to direct OpenAI...")
             self.agent = None
+            self.use_direct_openai = True
     
     async def generate_code_for_task(self, task_description: str, 
                                      context: Optional[str] = None) -> Dict:
         """
-        Generate code based on task description using SpoonOS
+        Generate code based on task description using SpoonOS or direct OpenAI
         
         Args:
             task_description: Description of the coding task
@@ -159,10 +178,14 @@ class AICodeGenerator:
         Returns:
             dict with generated code files and descriptions
         """
+        # Try direct OpenAI if SpoonOS failed
+        if self.use_direct_openai:
+            return await self._generate_with_direct_openai(task_description, context)
+        
         if not self.agent:
             return {
                 "success": False,
-                "error": "SpoonOS agent not available",
+                "error": "No AI agent available",
                 "files": []
             }
         
@@ -170,30 +193,87 @@ class AICodeGenerator:
             # Build the prompt for SpoonOS agent
             prompt = f"""Task: {task_description}
 
-Please generate the necessary code files for this task.
-
-IMPORTANT: After using the generate_code tool, you MUST output the actual code in your response.
-Format your response like this:
-
-File: path/to/file.py
-```python
-# actual code here
-```
-
-For EACH file you create with the tool, include the file path and code block in your response.
-
 """
             if context:
-                prompt += f"\nRepository context:\n{context}\n"
+                prompt += f"""
+=== FULL CODEBASE CONTEXT ===
+You have access to the complete repository. Review the files below to understand the codebase structure, existing patterns, and conventions.
+
+{context}
+
+=== END CODEBASE CONTEXT ===
+
+"""
             
             prompt += """
-Generate complete, working code with:
-- Proper imports and dependencies
-- Error handling
-- Comments explaining key logic
-- Best practices and standards
+Based on the task and the full codebase context above:
 
-Remember: OUTPUT the code in your response, don't just say you created it!
+1. Review the existing code structure and identify where your changes fit
+2. For EXISTING files: Include ALL existing code plus your modifications
+3. For NEW files: Create complete new files
+4. Maintain consistency with existing code style, imports, and patterns
+5. Propose concrete code changes as a CHANGESET
+
+CRITICAL: Output your response as a CHANGESET showing EXACTLY what will be created/modified.
+
+Use this EXACT format for EVERY response:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 **CHANGESET SUMMARY**
+Brief description of what this changeset does
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 **File: exact/path/to/file.py** [NEW] or [MODIFIED]
+
+```python
+# If [MODIFIED]: Include THE COMPLETE FILE with ALL existing code + your changes
+# If [NEW]: Complete new file
+
+# Example for [MODIFIED] file:
+# Keep all existing imports
+import existing_module
+import new_module  # <-- Your addition
+
+# Keep all existing classes/functions
+def existing_function():
+    pass
+
+# Your new additions
+def new_function():  # <-- Your addition
+    return "new feature"
+
+# Keep all existing code at the end
+class ExistingClass:
+    pass
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 **File: exact/path/to/another_file.py** [NEW]
+
+```python
+# Complete new file
+class NewClass:
+    def __init__(self):
+        pass
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CRITICAL RULES FOR [MODIFIED] FILES:
+1. Output the COMPLETE file content
+2. Include ALL existing code (imports, classes, functions, variables)
+3. Add your modifications/additions in the appropriate places
+4. Mark your additions with comments like # <-- Added for [task]
+5. Preserve all existing functionality unless explicitly asked to change it
+6. The output will REPLACE the entire file, so INCLUDE EVERYTHING
+
+CRITICAL RULES FOR [NEW] FILES:
+1. Complete, functional code with all necessary imports
+2. Follow repository conventions and patterns
+3. Integrate properly with existing codebase
+
+NEVER ask clarifying questions. ALWAYS propose concrete code immediately.
+If you must make assumptions, state them in ONE line, then show the code.
 """
             
             # Run the SpoonOS agent
@@ -272,6 +352,100 @@ Remember: OUTPUT the code in your response, don't just say you created it!
             return {
                 "success": False,
                 "error": str(e),
+                "files": []
+            }
+    
+    async def _generate_with_direct_openai(self, task_description: str, 
+                                           context: Optional[str] = None) -> Dict:
+        """
+        Generate code using OpenAI directly (fallback when SpoonOS fails)
+        
+        Args:
+            task_description: Description of the coding task
+            context: Optional context about the repository/project
+            
+        Returns:
+            dict with generated code files and descriptions
+        """
+        try:
+            import openai
+            import os
+            
+            logger.info("Using direct OpenAI fallback (SpoonOS unavailable)")
+            
+            # Build the prompt
+            prompt = f"""Task: {task_description}
+
+"""
+            if context:
+                prompt += f"""
+=== FULL CODEBASE CONTEXT ===
+{context}
+=== END CODEBASE CONTEXT ===
+
+"""
+            
+            prompt += """
+Based on the task and codebase context, generate the necessary code files.
+
+Use this EXACT format:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 CHANGESET SUMMARY
+Brief description
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 File: exact/path/to/file.py [NEW] or [MODIFIED]
+
+```python
+# Complete working code
+def example():
+    return "real code"
+```
+
+For [MODIFIED] files: Include ALL existing code plus your changes.
+For [NEW] files: Complete new file.
+
+Generate complete, working code with proper imports and error handling.
+"""
+            
+            # Call OpenAI directly
+            client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert software engineer. Generate complete, production-ready code based on requirements."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=4000
+            )
+            
+            response_text = response.choices[0].message.content
+            
+            logger.info(f"Direct OpenAI response received: {len(response_text)} chars")
+            
+            # Parse the response
+            files = self._parse_agent_response(response_text)
+            
+            return {
+                "success": True,
+                "files": files,
+                "raw_response": response_text
+            }
+            
+        except Exception as e:
+            logger.error(f"Error with direct OpenAI: {e}")
+            return {
+                "success": False,
+                "error": f"Direct OpenAI failed: {str(e)}",
                 "files": []
             }
     

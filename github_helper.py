@@ -168,7 +168,7 @@ class GitHubPRHelper:
     
     def _create_ai_generated_code(self, branch_name, task_description):
         """
-        Create code using AI agent
+        Create code using AI agent with intelligent file modification
         
         Args:
             branch_name: Name of the branch to commit to
@@ -178,13 +178,26 @@ class GitHubPRHelper:
             dict with change details
         """
         try:
-            # Get repository context
-            repo_context = f"Repository: {self.repo_name}\nLanguage: Python\nBranch: {branch_name}"
+            # Get full repository context including all files
+            logger.info("Fetching full codebase context...")
+            repo_context = self._get_full_codebase_context(branch_name)
             
-            # Generate code using AI
+            # Generate code using AI with instruction to handle file modifications properly
             logger.info(f"Generating code with AI for: {task_description}")
+            logger.info(f"Context size: {len(repo_context)} characters")
+            
+            # Enhanced task description to emphasize file modification handling
+            enhanced_task = f"""{task_description}
+
+IMPORTANT INSTRUCTIONS FOR FILE MODIFICATIONS:
+- For EXISTING files that you're modifying: Output the COMPLETE file content including ALL existing code plus your changes
+- For NEW files: Output the complete new file
+- When modifying a file, make sure to preserve all imports, functions, classes that should remain
+- Only change/add what's needed for this task
+"""
+            
             result = self.ai_generator.generate_code_sync(
-                task_description=task_description,
+                task_description=enhanced_task,
                 context=repo_context
             )
             
@@ -194,7 +207,7 @@ class GitHubPRHelper:
                     "error": result.get("error", "No files generated")
                 }
             
-            # Create files in the repository
+            # Process and apply file changes
             files_created = []
             for file_info in result["files"]:
                 file_path = file_info["path"]
@@ -202,10 +215,13 @@ class GitHubPRHelper:
                 file_desc = file_info.get("description", "AI-generated code")
                 
                 try:
-                    # Check if file exists
+                    # Check if file exists in the repository
+                    existing_file = None
                     try:
                         existing_file = self.repo.get_contents(file_path, ref=branch_name)
-                        # Update existing file
+                        
+                        # Update existing file with AI-generated content
+                        # AI has full codebase context and is instructed to output complete files
                         self.repo.update_file(
                             path=file_path,
                             message=f"🤖 Update {file_path}: {task_description[:50]}",
@@ -213,9 +229,11 @@ class GitHubPRHelper:
                             sha=existing_file.sha,
                             branch=branch_name
                         )
-                        files_created.append(f"Updated {file_path}")
-                    except:
-                        # Create new file
+                        files_created.append(f"Modified {file_path}")
+                        logger.info(f"Successfully modified {file_path}")
+                        
+                    except Exception as e:
+                        # File doesn't exist, create it
                         self.repo.create_file(
                             path=file_path,
                             message=f"🤖 Create {file_path}: {task_description[:50]}",
@@ -223,10 +241,10 @@ class GitHubPRHelper:
                             branch=branch_name
                         )
                         files_created.append(f"Created {file_path}")
+                        logger.info(f"Successfully created {file_path}")
                     
-                    logger.info(f"Successfully created/updated {file_path}")
                 except Exception as e:
-                    logger.error(f"Failed to create {file_path}: {e}")
+                    logger.error(f"Failed to process {file_path}: {e}")
                     continue
             
             if files_created:
@@ -246,6 +264,166 @@ class GitHubPRHelper:
                 "success": False,
                 "error": str(e)
             }
+    
+    def _get_full_codebase_context(self, branch_name):
+        """
+        Get the full codebase context by reading all relevant files
+        
+        Args:
+            branch_name: Branch to read files from
+            
+        Returns:
+            String containing full codebase context
+        """
+        try:
+            # Files and directories to ignore
+            ignore_patterns = [
+                '.git', '__pycache__', '.pytest_cache', 'node_modules',
+                '.venv', 'venv', 'env', '.env',
+                '.DS_Store', '.idea', '.vscode',
+                '*.pyc', '*.pyo', '*.pyd', '.so', '.dylib',
+                '*.egg-info', 'dist', 'build',
+                '.coverage', 'htmlcov', '.tox',
+                '*.log', '*.tmp', '*.swp', '*.swo',
+                'package-lock.json', 'yarn.lock', 'poetry.lock'
+            ]
+            
+            # File extensions to include (source code files)
+            include_extensions = [
+                '.py', '.js', '.ts', '.tsx', '.jsx',
+                '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
+                '.rb', '.php', '.swift', '.kt', '.scala',
+                '.md', '.txt', '.yml', '.yaml', '.json', '.toml',
+                '.sh', '.bash', '.zsh', '.sql', '.html', '.css'
+            ]
+            
+            # Maximum file size to include (500KB)
+            max_file_size = 500 * 1024
+            
+            context_parts = [
+                f"# Full Codebase Context",
+                f"Repository: {self.repo_name}",
+                f"Branch: {branch_name}",
+                f"",
+                f"## Repository Structure and Files",
+                f""
+            ]
+            
+            # Get all contents recursively
+            def should_ignore(path):
+                """Check if path should be ignored"""
+                for pattern in ignore_patterns:
+                    if pattern.startswith('*.'):
+                        # File extension pattern
+                        if path.endswith(pattern[1:]):
+                            return True
+                    else:
+                        # Directory or filename pattern
+                        if pattern in path.split('/'):
+                            return True
+                return False
+            
+            def should_include(path):
+                """Check if file should be included based on extension"""
+                return any(path.endswith(ext) for ext in include_extensions)
+            
+            def get_contents_recursive(path=""):
+                """Recursively get all file contents"""
+                files_content = []
+                
+                try:
+                    contents = self.repo.get_contents(path, ref=branch_name)
+                    
+                    # Handle single file
+                    if not isinstance(contents, list):
+                        contents = [contents]
+                    
+                    for content in contents:
+                        full_path = content.path
+                        
+                        # Skip ignored files/directories
+                        if should_ignore(full_path):
+                            logger.debug(f"Ignoring: {full_path}")
+                            continue
+                        
+                        if content.type == "dir":
+                            # Recursively process directory
+                            logger.debug(f"Processing directory: {full_path}")
+                            files_content.extend(get_contents_recursive(full_path))
+                        
+                        elif content.type == "file":
+                            # Check if we should include this file
+                            if not should_include(full_path):
+                                logger.debug(f"Skipping non-source file: {full_path}")
+                                continue
+                            
+                            # Check file size
+                            if content.size > max_file_size:
+                                logger.warning(f"Skipping large file: {full_path} ({content.size} bytes)")
+                                files_content.append({
+                                    'path': full_path,
+                                    'content': f"[File too large: {content.size} bytes - skipped]",
+                                    'size': content.size
+                                })
+                                continue
+                            
+                            try:
+                                # Get file content
+                                file_content = content.decoded_content.decode('utf-8')
+                                files_content.append({
+                                    'path': full_path,
+                                    'content': file_content,
+                                    'size': content.size
+                                })
+                                logger.debug(f"Included file: {full_path} ({content.size} bytes)")
+                            except (UnicodeDecodeError, Exception) as e:
+                                # Skip binary or unreadable files
+                                logger.debug(f"Skipping unreadable file: {full_path} - {e}")
+                                files_content.append({
+                                    'path': full_path,
+                                    'content': f"[Binary or unreadable file - skipped]",
+                                    'size': content.size
+                                })
+                
+                except Exception as e:
+                    logger.error(f"Error reading contents at {path}: {e}")
+                
+                return files_content
+            
+            # Get all file contents
+            logger.info("Reading repository files...")
+            all_files = get_contents_recursive()
+            
+            # Sort files by path for better organization
+            all_files.sort(key=lambda x: x['path'])
+            
+            logger.info(f"Found {len(all_files)} files to include in context")
+            
+            # Build the context string
+            context_parts.append(f"Total files: {len(all_files)}")
+            context_parts.append("")
+            
+            # Add each file
+            for file_info in all_files:
+                file_path = file_info['path']
+                file_content = file_info['content']
+                
+                context_parts.append(f"{'='*80}")
+                context_parts.append(f"File: {file_path}")
+                context_parts.append(f"{'='*80}")
+                context_parts.append(file_content)
+                context_parts.append("")
+            
+            context = "\n".join(context_parts)
+            
+            logger.info(f"Built codebase context: {len(context)} chars, {len(all_files)} files")
+            
+            return context
+            
+        except Exception as e:
+            logger.error(f"Error building codebase context: {e}")
+            # Fallback to basic context
+            return f"Repository: {self.repo_name}\nBranch: {branch_name}\n\nError reading full codebase: {str(e)}"
     
     def _add_comment_to_readme(self, branch_name, task_description):
         """Add a timestamped comment to README"""

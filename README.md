@@ -13,6 +13,11 @@ A Slack bot that responds to mentions (@bot) and provides full context from the 
 - 🔀 **NEW:** Merges pull requests directly from Slack
 - ↩️ **NEW:** Reverts/unmerges PRs by creating revert PRs
 - 🤖 **NEW:** AI-powered code generation using SpoonOS framework
+- 📖 **NEW:** Full codebase context - AI agent reads entire repository before making changes
+- 🎯 **NEW:** Context-aware code generation that integrates seamlessly with existing code
+- 📝 **NEW:** Changeset format - every response shows exactly what files/code will be created
+- ✏️ **NEW:** File modifications - edits existing files while preserving all existing code
+- 💬 **NEW:** Iterative refinement - provide feedback to update the changeset before creating PR
 - 🚀 **NEW:** Full GitHub API integration for PR lifecycle management
 
 ## Prerequisites
@@ -292,6 +297,141 @@ The bot uses two methods to gather context:
 - When mentioned, it gathers context and formulates a response
 - Responses are sent in the same thread if the mention was in a thread
 
+### AI Code Generation with Full Codebase Context
+
+When you ask the bot to create a PR, it follows this intelligent workflow:
+
+1. **Full Codebase Reading**: 
+   - Clones or fetches the entire repository from GitHub
+   - Reads all source code files (Python, JavaScript, TypeScript, Java, Go, Rust, etc.)
+   - Filters out build artifacts, dependencies, and binary files
+   - Respects standard ignore patterns (.git, node_modules, venv, etc.)
+
+2. **Context Building**:
+   - Creates a comprehensive context containing all repository files
+   - Includes file paths, content, and structure
+   - Limits individual file size to 500KB to stay within reasonable bounds
+   - Caches the context for the conversation to avoid repeated fetches
+
+3. **AI Analysis**:
+   - Passes the full codebase context to the AI agent (SpoonOS)
+   - AI understands existing code patterns, imports, and architecture
+   - Generates code that integrates seamlessly with your existing codebase
+   - Maintains consistent coding style and follows repository conventions
+
+4. **Conversational Refinement**:
+   - Proposes concrete code changes as diffs/changesets
+   - You can provide feedback to modify the proposed changes
+   - AI updates the changeset based on your input
+   - All while maintaining awareness of the full codebase
+
+5. **PR Creation**:
+   - When you say "make PR" or click the button, creates actual files
+   - Commits changes to a new branch
+   - Opens a pull request with all the generated code
+
+**Key Benefits:**
+- ✅ AI knows what code already exists in your repo
+- ✅ Generated code uses correct imports and dependencies
+- ✅ Maintains your existing code style and patterns
+- ✅ Avoids conflicts and duplicate implementations
+- ✅ Integrates properly with existing architecture
+- ✅ **Modifies existing files** while preserving all existing code
+
+### How File Modifications Work
+
+The bot can **edit existing files**, not just create new ones!
+
+**For Existing Files** ([MODIFIED]):
+1. AI reads the complete current file content
+2. Generates a new version with ALL existing code + your changes
+3. Shows you the complete updated file in the changeset
+4. Replaces the file when you create the PR
+
+**For New Files** ([NEW]):
+1. AI creates completely new files
+2. Ensures proper integration with existing code
+3. Uses imports and patterns from your codebase
+
+**Example**:
+```python
+# Your existing src/auth.py
+def login(username, password):
+    return username == "admin"
+
+# You ask: "add JWT token generation"
+
+# AI generates [MODIFIED] file:
+def login(username, password):  # <-- Preserved
+    return username == "admin"
+
+def generate_token(user_id):  # <-- Added
+    import jwt
+    return jwt.encode({'user_id': user_id}, 'secret')
+```
+
+See [FILE_MODIFICATIONS.md](FILE_MODIFICATIONS.md) for detailed examples.
+
+**Example Workflow:**
+```
+You: @bot add authentication middleware to the Express app
+
+Bot: 🤖 I'll propose a changeset for:
+     > add authentication middleware to the Express app
+     📚 Reading codebase and generating changes...
+
+Bot: 🆕 Proposed Changeset (2 files)
+     
+     📝 PROPOSED CHANGESET
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━
+     📋 CHANGESET SUMMARY
+     Add JWT authentication middleware for Express
+     
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━
+     📄 File: src/middleware/auth.js [NEW]
+     
+     ```javascript
+     const jwt = require('jsonwebtoken');
+     
+     // Uses your existing config pattern
+     const { JWT_SECRET } = require('../config');
+     
+     function authenticateToken(req, res, next) {
+       const token = req.headers['authorization']?.split(' ')[1];
+       
+       if (!token) {
+         return res.status(401).json({ error: 'No token provided' });
+       }
+       
+       jwt.verify(token, JWT_SECRET, (err, user) => {
+         if (err) {
+           return res.status(403).json({ error: 'Invalid token' });
+         }
+         req.user = user;
+         next();
+       });
+     }
+     
+     module.exports = { authenticateToken };
+     ```
+     
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━
+     📊 Summary: 2 file(s) in this changeset
+     📝 Files: src/middleware/auth.js, src/app.js
+     
+     [🚀 Make PR with These Changes]
+
+You: Add token refresh functionality
+
+Bot: 🔄 Proposed Changeset (3 files)
+     [Shows updated changeset with refresh token endpoint added]
+
+You: Make PR
+
+Bot: ✅ PR #123 created successfully!
+     🔗 https://github.com/user/repo/pull/123
+```
+
 ## Project Structure
 
 ```
@@ -391,20 +531,48 @@ def handle_reaction(event, say):
 
 ## GitHub PR Feature
 
-The bot can now create GitHub pull requests! Currently, it creates placeholder PRs with random changes to demonstrate the functionality.
+The bot can create intelligent GitHub pull requests with full codebase awareness!
 
-**Current behavior:**
+**How it works:**
 
-- Creates a new branch
-- Makes a random change (adds comment to README, creates task log, or updates bot stats)
-- Opens a pull request with your task description
+1. **Full Codebase Analysis**: Reads your entire repository before generating code
+2. **AI-Powered Generation**: Uses SpoonOS framework with OpenAI/Anthropic to create code
+3. **Context-Aware**: Understands existing patterns, imports, and architecture
+4. **Conversational**: Proposes changes, gets your feedback, refines the code
+5. **Seamless Integration**: Generated code matches your existing style and structure
 
-**Future enhancements:**
+**Workflow:**
 
-- Parse task descriptions to generate actual code
-- Integrate with AI/LLM for intelligent code generation
-- Read existing code and make contextual modifications
-- Run tests before creating PRs
+```
+You: @bot add user authentication with JWT
+Bot: 📚 Reading full codebase...
+Bot: **Proposed Changes:**
+     📄 File: src/auth/jwt.py
+     [Shows complete implementation matching your codebase]
+     
+You: Add token refresh functionality
+Bot: [Updates the changeset with refresh tokens]
+
+You: Make PR  (or click the "Make PR" button)
+Bot: ✅ PR #123 created successfully!
+```
+
+**Commands:**
+
+- **Create PR**: `@bot <task description>` - Start a PR conversation
+- **Continue**: Reply in thread with feedback or modifications
+- **Finalize**: Say "make PR" or click the button to create the actual PR
+- **Merge**: `@bot merge #123` - Merge a PR
+- **Revert**: `@bot unmerge #123` - Create a revert PR
+
+**Features:**
+
+- ✅ Reads entire codebase for context
+- ✅ AI-generated code that integrates seamlessly  
+- ✅ Conversational refinement before PR creation
+- ✅ Respects existing code patterns and style
+- ✅ Proper imports based on your dependencies
+- ✅ Creates actual working code, not placeholders
 
 See [GITHUB_SETUP.md](GITHUB_SETUP.md) for complete setup instructions.
 
