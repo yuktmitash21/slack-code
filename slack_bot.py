@@ -60,21 +60,23 @@ def is_ready_to_create_pr(message_text):
     return any(phrase in text_lower for phrase in create_pr_phrases)
 
 
-def _generate_changeset_preview(prompt: str, context: str) -> dict:
+def _generate_changeset_preview(prompt: str, context: str, github_helper) -> dict:
     """
-    Generate a changeset preview using OpenAI (for conversation)
+    Generate a changeset preview using SpoonOS (same AI for preview and PR)
     This shows proposed changes to the user before PR creation
     
-    Note: For preview, we use direct OpenAI for simplicity and speed.
-    For actual PR creation, we use SpoonOS's full CodingAgent with tools.
+    Returns both the formatted response AND parsed files for caching
     """
     try:
-        import openai
-        import os
+        logger.info("Generating changeset preview with SpoonOS CodingAgent...")
         
-        logger.info("Generating changeset preview with OpenAI...")
-        
-        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        # Use the same AI generator as PR creation
+        if not github_helper or not github_helper.use_ai or not github_helper.ai_generator:
+            logger.error("SpoonOS AI generator not available")
+            return {
+                "success": False,
+                "error": "AI generator not configured"
+            }
         
         full_prompt = f"""{prompt}
 
@@ -85,33 +87,56 @@ Remember: This is a PREVIEW. Show the proposed changes as concrete diffs/changes
 The user can refine these changes through conversation before creating the PR.
 """
         
-        response = client.chat.completions.create(
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert software engineer. Propose concrete code changes in changeset format. Do NOT ask clarifying questions - make reasonable assumptions and propose specific changes immediately. The user will refine them through conversation if needed."
-                },
-                {
-                    "role": "user",
-                    "content": full_prompt
-                }
-            ],
-            temperature=0.7,
-            max_tokens=4000
+        # Generate code using SpoonOS (same as PR creation)
+        result = github_helper.ai_generator.generate_code_sync(
+            task_description=full_prompt,
+            context=context
         )
         
-        response_text = response.choices[0].message.content
+        if not result.get("success"):
+            return {
+                "success": False,
+                "error": result.get("error", "Code generation failed")
+            }
         
-        logger.info("Changeset preview generated successfully")
+        # Get the raw response and parsed files
+        raw_response = result.get("raw_response", "")
+        parsed_files = result.get("files", [])
+        
+        logger.info(f"SpoonOS preview generated: {len(parsed_files)} file(s)")
+        
+        # Format the response as a changeset for Slack
+        if parsed_files:
+            formatted_response = "📝 PROPOSED CHANGESET\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            for file_info in parsed_files:
+                filepath = file_info.get("path", "unknown")
+                action = file_info.get("action", "NEW")
+                content = file_info.get("content", "")
+                
+                formatted_response += f"📄 File: {filepath} [{action}]\n\n"
+                
+                if action == "DELETED":
+                    formatted_response += f"_This file will be deleted_\n\n"
+                else:
+                    # Show preview of content
+                    content_preview = content[:500] + "..." if len(content) > 500 else content
+                    formatted_response += f"```\n{content_preview}\n```\n\n"
+                
+                formatted_response += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            formatted_response += f"📊 Summary: {len(parsed_files)} file(s) in this changeset"
+        else:
+            formatted_response = str(raw_response)
         
         return {
             "success": True,
-            "raw_response": response_text
+            "raw_response": formatted_response,
+            "parsed_files": parsed_files  # Cache these for PR creation!
         }
         
     except Exception as e:
-        logger.error(f"Error generating preview: {e}")
+        logger.error(f"Error generating preview with SpoonOS: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {
@@ -483,7 +508,8 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             "thread_ts": thread_ts,
             "channel_id": channel_id,
             "plan": None,
-            "codebase_context": None  # Will be fetched once and cached
+            "codebase_context": None,  # Will be fetched once and cached
+            "cached_files": []  # Parsed files from preview (for PR creation)
         }
     
     # Always use the stored user_id to tag
@@ -508,14 +534,16 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             for msg in pr_conversations[conversation_key]["messages"]
         ])
         
-        # Get the cached codebase context
+        # Get the cached codebase context and files
         codebase_context = pr_conversations[conversation_key].get("codebase_context")
+        cached_files = pr_conversations[conversation_key].get("cached_files", [])
         
         # Pass thread_ts as context for unique branch naming AND codebase context
         result = github_helper.create_random_pr(
             all_messages, 
             thread_context=thread_ts,
-            codebase_context=codebase_context
+            codebase_context=codebase_context,
+            cached_files=cached_files  # Use cached result from preview!
         )
         _send_pr_result(result, pr_conversations[conversation_key]["initial_task"], say, thread_ts, stored_user_id)
         
@@ -542,7 +570,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
     
     # Get AI response
     try:
-        # Use OpenAI for fast changeset previews, SpoonOS for actual PR creation with tools
+        # Use SpoonOS for both preview and PR creation (with caching for consistency)
         
         # Fetch codebase context once and cache it (for conversation preview)
         # Safety check: add codebase_context if it doesn't exist (for old conversations)
@@ -607,7 +635,8 @@ Rules:
 - Use the EXACT filename the user specified (e.g., snake.html not snake.md)
 - For MODIFIED files, show the COMPLETE updated file
 - For NEW files, show the complete new file
-- For DELETED files, explain what's being removed
+- For DELETED files, use [DELETED] tag and list EACH FILE explicitly by name (e.g., "delete all .py files" means list each one: test.py [DELETED], utils.py [DELETED], etc.)
+- DO NOT create files describing deletions - use the [DELETED] tag to actually delete files
 - Base changes on the full codebase context provided
 - Make reasonable assumptions about what the user wants
 """
@@ -615,8 +644,12 @@ Rules:
         # Use the cached full codebase context for preview
         full_codebase_context = pr_conversations[conversation_key]["codebase_context"]
         
-        # Generate changeset preview using OpenAI
-        ai_result = _generate_changeset_preview(planning_prompt, full_codebase_context)
+        # Generate changeset preview using SpoonOS
+        ai_result = _generate_changeset_preview(
+            prompt=planning_prompt,
+            context=full_codebase_context,
+            github_helper=github_helper
+        )
         
         if not ai_result.get("success"):
             say(
@@ -626,12 +659,16 @@ Rules:
             return
         
         ai_response = ai_result.get("raw_response", "")
+        parsed_files = ai_result.get("parsed_files", [])
         
-        # Store AI response
+        logger.info(f"Caching {len(parsed_files)} parsed files for PR creation")
+        
+        # Store AI response AND parsed files (for PR creation)
         pr_conversations[conversation_key]["messages"].append({
             "role": "assistant",
             "content": ai_response
         })
+        pr_conversations[conversation_key]["cached_files"] = parsed_files  # Cache for PR!
         
         # Send response with instructions and Make PR button
         # Split long messages into chunks (Slack limit: 3000 chars per block)
@@ -1047,14 +1084,16 @@ def handle_make_pr_button_click(ack, body, client, logger):
             for msg in conv["messages"]
         ])
         
-        # Get the cached codebase context
+        # Get the cached codebase context and files
         codebase_context = conv.get("codebase_context")
+        cached_files = conv.get("cached_files", [])
         
-        # Create the PR
+        # Create the PR using cached files (no second AI call!)
         result = github_helper.create_random_pr(
             all_messages, 
             thread_context=thread_ts,
-            codebase_context=codebase_context
+            codebase_context=codebase_context,
+            cached_files=cached_files  # Use cached result from preview!
         )
         
         # Send result

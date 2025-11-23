@@ -97,9 +97,11 @@ When given a coding task, you can:
    - When modifying, provide the ENTIRE file with all existing code preserved
    - Only change the specific parts mentioned in the task
    - Keep all imports, functions, and features that aren't being modified
-3. DELETE code - Remove functions, classes, or entire sections from files
-   - Provide the complete file with the unwanted code removed
-   - Ensure remaining code is still functional
+3. DELETE files or code:
+   - To DELETE ENTIRE FILES: Mark with [DELETED] tag and list EACH file explicitly
+   - To DELETE CODE from a file: Provide the complete file with the unwanted code removed
+   - When user says "delete all X files", list each one explicitly by name
+   - DO NOT create files describing deletions - use proper deletion markers
 
 Best Practices:
 - Analyze the existing codebase structure and patterns
@@ -306,9 +308,28 @@ Remember: OUTPUT the code in your response, don't just say you created it!
         logger.info("Attempting to parse response text for code blocks...")
         
         # Method 0: Look for changeset format with file markers
-        # Pattern: 📄 File: path/to/file.py [NEW/MODIFIED]
-        changeset_pattern = r'📄\s*File:\s*([^\s\[]+(?:\.[a-zA-Z0-9]+)?)\s*\[(?:NEW|MODIFIED|DELETED)\][\s\S]*?```[\w]*\n(.*?)```'
-        changeset_matches = re.findall(changeset_pattern, response_str, re.DOTALL)
+        # Pattern: 📄 File: path/to/file.py [NEW/MODIFIED/DELETED]
+        # Capture the tag to know if it's a deletion
+        
+        # First, find ALL file markers with tags (including deletions without code blocks)
+        file_marker_pattern = r'📄\s*File:\s*([^\s\[]+(?:\.[a-zA-Z0-9]+)?)\s*\[(NEW|MODIFIED|DELETED)\]'
+        file_markers = re.findall(file_marker_pattern, response_str)
+        
+        # Then for each marker, try to find associated code block (optional)
+        changeset_matches = []
+        for filepath, tag in file_markers:
+            # Look for code block after this file marker
+            # Make code block optional (for DELETED files)
+            code_pattern = rf'📄\s*File:\s*{re.escape(filepath)}\s*\[{tag}\][\s\S]*?```[\w]*\n(.*?)```'
+            code_match = re.search(code_pattern, response_str, re.DOTALL)
+            
+            if code_match:
+                code = code_match.group(1)
+            else:
+                # No code block found (probably a DELETED file)
+                code = ""
+            
+            changeset_matches.append((filepath, tag, code))
         
         # Method 0b: Also look for SpoonOS format without emoji/tags
         # Pattern: File: path/to/file.py (followed by code block)
@@ -323,46 +344,63 @@ Remember: OUTPUT the code in your response, don't just say you created it!
         
         logger.info(f"Searching for changeset format files...")
         logger.info(f"Response length: {len(response_str)} chars")
-        logger.info(f"Found {len(changeset_matches)} changeset matches (with emoji)")
+        logger.info(f"Found {len(file_markers)} file markers with tags")
+        logger.info(f"Found {len(changeset_matches)} changeset matches (with emoji, code optional)")
         logger.info(f"Found {len(spoonos_matches)} SpoonOS format matches (File: filename)")
         logger.info(f"Found {len(filename_only_matches)} filename-only matches")
         
-        # Combine all patterns (prioritize specific formats)
-        all_matches = []
+        # Normalize matches to include tag info
+        # changeset_matches have 3 groups: (filepath, tag, code)
+        # other matches have 2 groups: (filepath, code)
+        normalized_matches = []
         
         if changeset_matches:
             logger.info(f"=== CHANGESET FORMAT DETECTED (with emoji) ===")
-            all_matches.extend(changeset_matches)
+            for filepath, tag, code in changeset_matches:
+                normalized_matches.append((filepath, code, tag))
         
         if spoonos_matches:
             logger.info(f"=== SPOONOS FORMAT DETECTED (File: filename) ===")
-            all_matches.extend(spoonos_matches)
+            for filepath, code in spoonos_matches:
+                normalized_matches.append((filepath, code, "NEW"))  # Default to NEW
         
         # Only use filename-only matches if no other format was found
-        if not all_matches and filename_only_matches:
+        if not normalized_matches and filename_only_matches:
             logger.info(f"=== FILENAME-ONLY FORMAT DETECTED ===")
-            all_matches.extend(filename_only_matches)
+            for filepath, code in filename_only_matches:
+                normalized_matches.append((filepath, code, "NEW"))  # Default to NEW
         
-        if all_matches:
-            for i, (filepath, code) in enumerate(all_matches):
+        if normalized_matches:
+            for i, (filepath, code, tag) in enumerate(normalized_matches):
                 filepath = filepath.strip()
                 code_stripped = code.strip()
+                tag = tag.upper()
+                
                 logger.info(f"Match {i+1}:")
                 logger.info(f"  Filepath: '{filepath}'")
+                logger.info(f"  Tag: [{tag}]")
                 logger.info(f"  Code length: {len(code_stripped)} chars")
                 logger.info(f"  Code preview: {code_stripped[:100]}...")
                 
-                if filepath and code_stripped:
-                    files.append({
+                if filepath:
+                    file_info = {
                         "path": filepath,
                         "content": code_stripped,
-                        "description": f"AI-generated file: {filepath}"
-                    })
+                        "description": f"AI-generated file: {filepath}",
+                        "action": tag  # NEW, MODIFIED, or DELETED
+                    }
+                    
+                    if tag == "DELETED":
+                        logger.info(f"  🗑️  File marked for DELETION")
+                        file_info["content"] = ""  # Empty content for deletions
+                    
+                    files.append(file_info)
                     # Track this code content so we don't duplicate it
-                    extracted_code_contents.add(code_stripped)
+                    if code_stripped:
+                        extracted_code_contents.add(code_stripped)
                     logger.info(f"  ✅ Added to files list")
                 else:
-                    logger.warning(f"  ❌ Skipped (empty filepath or code)")
+                    logger.warning(f"  ❌ Skipped (empty filepath)")
             
             # If we found files with explicit filenames, skip other methods to avoid duplicates
             logger.info("Explicit file format found, skipping generic code block extraction")

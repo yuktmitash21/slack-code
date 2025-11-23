@@ -231,7 +231,7 @@ class GitHubPRHelper:
         logger.info(f"Generated branch name: {branch_name} (from task: {task_description[:50]})")
         return branch_name
     
-    def create_random_pr(self, task_description="", thread_context=None, codebase_context=None):
+    def create_random_pr(self, task_description="", thread_context=None, codebase_context=None, cached_files=None):
         """
         Create a random pull request to the repository
         
@@ -239,6 +239,7 @@ class GitHubPRHelper:
             task_description: Description of the task from Slack (can be full conversation history)
             thread_context: Optional thread context (thread_ts) for unique branch naming
             codebase_context: Full codebase context (all files) for AI to understand existing code
+            cached_files: Pre-parsed files from preview (avoids second AI call)
             
         Returns:
             dict with PR details or error
@@ -280,8 +281,8 @@ class GitHubPRHelper:
                     # Use the full conversation for context, but prioritize deletion
                     logger.info(f"Found deletion request in conversation: {files_to_delete}")
             
-            # Make a random change to a file
-            change_result = self._make_random_change(branch_name, task_description, codebase_context)
+            # Make a random change to a file (use cached files if available)
+            change_result = self._make_random_change(branch_name, task_description, codebase_context, cached_files)
             
             if not change_result["success"]:
                 return {
@@ -456,7 +457,7 @@ class GitHubPRHelper:
                 "error": f"Could not delete files: {', '.join(errors) if errors else ', '.join(files_to_delete)}"
             }
     
-    def _make_random_change(self, branch_name, task_description, codebase_context=None):
+    def _make_random_change(self, branch_name, task_description, codebase_context=None, cached_files=None):
         """
         Make changes using AI or fallback to random changes
         
@@ -464,12 +465,27 @@ class GitHubPRHelper:
             branch_name: Name of the branch to commit to
             task_description: Task description from Slack
             codebase_context: Full codebase context for AI to understand existing code
+            cached_files: Pre-parsed files from preview (avoids second AI call)
             
         Returns:
             dict with change details
         """
         try:
-            # FIRST: Check if this is a file deletion request
+            # FIRST: If we have cached files from preview, use them directly!
+            if cached_files:
+                logger.info(f"✅ Using cached files from preview: {len(cached_files)} file(s)")
+                result = self._create_ai_generated_code(
+                    branch_name, 
+                    task_description, 
+                    codebase_context, 
+                    cached_files
+                )
+                if result["success"]:
+                    return result
+                else:
+                    logger.warning(f"Cached files failed: {result.get('error')}, generating fresh")
+            
+            # SECOND: Check if this is a file deletion request
             files_to_delete = self._detect_file_deletion(task_description)
             
             if files_to_delete:
@@ -479,7 +495,7 @@ class GitHubPRHelper:
                 logger.info(f"Deletion result: {deletion_result}")
                 return deletion_result
             
-            # Try AI-generated code first
+            # THIRD: Try AI-generated code
             if self.use_ai and self.ai_generator:
                 logger.info("Attempting AI code generation...")
                 try:
@@ -510,23 +526,32 @@ class GitHubPRHelper:
                 "error": str(e)
             }
     
-    def _create_ai_generated_code(self, branch_name, task_description, codebase_context=None):
+    def _create_ai_generated_code(self, branch_name, task_description, codebase_context=None, cached_files=None):
         """
-        Create code using AI agent
+        Create code using AI agent or cached files
         
         Args:
             branch_name: Name of the branch to commit to
             task_description: Task description from Slack
             codebase_context: Full codebase context (all files) for AI to understand existing code
+            cached_files: Pre-parsed files from preview (skips AI generation)
             
         Returns:
             dict with change details
         """
         try:
-            # Build comprehensive context for AI
-            if codebase_context:
-                # Use the full codebase context provided
-                repo_context = f"""Repository: {self.repo_name}
+            # If we have cached files, use them directly!
+            if cached_files:
+                logger.info(f"✅ Using {len(cached_files)} cached file(s) from preview - NO AI CALL NEEDED")
+                result = {
+                    "success": True,
+                    "files": cached_files
+                }
+            else:
+                # Build comprehensive context for AI
+                if codebase_context:
+                    # Use the full codebase context provided
+                    repo_context = f"""Repository: {self.repo_name}
 Branch: {branch_name}
 
 FULL CODEBASE CONTEXT:
@@ -538,20 +563,20 @@ IMPORTANT: You have access to ALL existing files above.
 - You can DELETE code from existing files
 - Preserve existing functionality unless explicitly told to remove it
 """
-                logger.info(f"Using full codebase context: {len(codebase_context)} characters")
-            else:
-                # Fallback to minimal context
-                repo_context = f"Repository: {self.repo_name}\nLanguage: Python\nBranch: {branch_name}"
-                logger.warning("No codebase context provided - AI will have limited visibility")
-            
-            # Generate code using AI
-            logger.info(f"Generating code with AI for: {task_description}")
-            logger.info(f"Total context size: {len(repo_context)} characters")
-            
-            result = self.ai_generator.generate_code_sync(
-                task_description=task_description,
-                context=repo_context
-            )
+                    logger.info(f"Using full codebase context: {len(codebase_context)} characters")
+                else:
+                    # Fallback to minimal context
+                    repo_context = f"Repository: {self.repo_name}\nLanguage: Python\nBranch: {branch_name}"
+                    logger.warning("No codebase context provided - AI will have limited visibility")
+                
+                # Generate code using AI
+                logger.info(f"Generating code with AI for: {task_description}")
+                logger.info(f"Total context size: {len(repo_context)} characters")
+                
+                result = self.ai_generator.generate_code_sync(
+                    task_description=task_description,
+                    context=repo_context
+                )
             
             if not result.get("success") or not result.get("files"):
                 return {
@@ -560,22 +585,39 @@ IMPORTANT: You have access to ALL existing files above.
                 }
             
             # Create files in the repository
-            logger.info(f"=== CREATING FILES ON GITHUB ===")
-            logger.info(f"Total files to create: {len(result['files'])}")
+            logger.info(f"Creating {len(result['files'])} file(s) on GitHub")
             
             files_created = []
             for i, file_info in enumerate(result["files"]):
                 file_path = file_info["path"]
                 file_content = file_info["content"]
                 file_desc = file_info.get("description", "AI-generated code")
+                file_action = file_info.get("action", "NEW").upper()
                 
-                logger.info(f"File {i+1}/{len(result['files'])}:")
-                logger.info(f"  Path: {file_path}")
-                logger.info(f"  Content length: {len(file_content)} chars")
-                logger.info(f"  Description: {file_desc}")
+                logger.info(f"File {i+1}/{len(result['files'])}: {file_path} [{file_action}]")
                 
                 try:
-                    # Check if file exists in the repository
+                    # Handle file deletion
+                    if file_action == "DELETED":
+                        logger.info(f"  🗑️  Deleting file: {file_path}")
+                        try:
+                            existing_file = self.repo.get_contents(file_path, ref=branch_name)
+                            self.repo.delete_file(
+                                path=file_path,
+                                message=f"🤖 Delete {file_path}: {task_description[:50]}",
+                                sha=existing_file.sha,
+                                branch=branch_name
+                            )
+                            files_created.append(f"Deleted {file_path}")
+                            logger.info(f"  ✅ Deleted file: {file_path}")
+                        except Exception as e:
+                            if "404" in str(e) or "Not Found" in str(e):
+                                logger.warning(f"  ⚠️  File not found, skipping: {file_path}")
+                            else:
+                                raise
+                        continue
+                    
+                    # Handle file creation/update
                     try:
                         existing_file = self.repo.get_contents(file_path, ref=branch_name)
                         
@@ -601,14 +643,12 @@ IMPORTANT: You have access to ALL existing files above.
                         logger.info(f"  ✅ Created new file: {file_path}")
                     
                 except Exception as e:
-                    logger.error(f"  ❌ Failed to create {file_path}: {e}")
+                    logger.error(f"  ❌ Failed to process {file_path}: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
                     continue
             
-            logger.info(f"=== FILE CREATION COMPLETE ===")
-            logger.info(f"Successfully created/updated: {len(files_created)} file(s)")
-            logger.info(f"Files: {files_created}")
+            logger.info(f"File operations complete: {len(files_created)} file(s)")
             
             if files_created:
                 return {

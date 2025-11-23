@@ -1,447 +1,294 @@
-# Slack Bot with Channel Context & GitHub Integration
+# Slack Bot with GitHub Integration and AI Code Generation
 
-A Slack bot that responds to mentions (@bot) and provides full context from the channel conversation. The bot can access recent messages from both the channel and any thread it's mentioned in. It can also create GitHub pull requests on demand!
+A Slack bot that responds to mentions, manages GitHub pull requests, and uses SpoonOS for AI-powered code generation.
 
 ## Features
 
-- 🤖 Responds when mentioned with `@bot`
-- 📚 Accesses and displays recent channel messages (up to 50)
-- 🧵 Understands thread context when mentioned in a thread
-- 📝 Shows formatted conversation history with timestamps and usernames
-- ⚡️ Uses Socket Mode for real-time communication (no public URL needed)
-- 🔧 **NEW:** Creates GitHub pull requests when given a task
-- 🔀 **NEW:** Merges pull requests directly from Slack
-- ↩️ **NEW:** Reverts/unmerges PRs by creating revert PRs
-- 🤖 **NEW:** AI-powered code generation using OpenAI
-- 📖 **NEW:** Full codebase context - AI agent reads entire repository before making changes
-- 🎯 **NEW:** Context-aware code generation that integrates seamlessly with existing code
-- 📝 **NEW:** Changeset format - every response shows exactly what files/code will be created
-- ✏️ **NEW:** File modifications - edits existing files while preserving existing code
-- 💬 **NEW:** Iterative refinement - provide feedback to update the changeset before creating PR
-- 🚀 **NEW:** Full GitHub API integration for PR lifecycle management
+- 🤖 **Conversational PR Creation**: Discuss code changes in Slack threads before creating PRs
+- 📝 **AI Code Generation**: Uses SpoonOS's CodingAgent for intelligent code modifications
+- 🔄 **Smart Caching**: Single AI call per conversation - preview is reused for PR creation
+- 🎯 **Full Codebase Context**: Bot has access to entire repository for better code generation
+- 🧵 **Thread-based Conversations**: All interactions happen in threads for organized discussions
+- 👤 **User Tagging**: Bot tags users in replies for better notifications
+- ⚡ **No Questions Policy**: Bot proposes concrete code changes immediately
+- 🚀 **Explicit PR Creation**: PRs only created when user types "make PR" or clicks button
+- ♻️ **Consistent Results**: Preview and PR use the same AI-generated files
 
-## Prerequisites
+## Architecture
 
-- Python 3.8 or higher
-- A Slack workspace where you have permission to install apps
-- (Optional) A GitHub account and repository for PR creation feature
-- (Optional) OpenAI API key for AI code generation
+### Single AI System (SpoonOS)
 
-## Setup Instructions
+```
+User: "Add a login feature"
+  ↓
+Bot: SpoonOS generates code → Parse files → Format for Slack → Cache files
+  ↓
+Preview shown with "Make PR" button
+  ↓
+User: "make PR" (text or button)
+  ↓
+Bot: Use cached files → Create branch → Commit → Open PR
+     (NO second AI call!)
+```
 
-### 1. Create a Slack App
+### Why This Approach?
 
-1. Go to [Slack API Apps page](https://api.slack.com/apps)
-2. Click **"Create New App"**
-3. Choose **"From scratch"**
-4. Give your app a name (e.g., "Context Bot") and select your workspace
-5. Click **"Create App"**
+✅ **Perfect Consistency**: Preview and PR are guaranteed identical  
+✅ **Faster PR Creation**: No second AI call needed  
+✅ **Cost Effective**: Single AI call per iteration  
+✅ **Reliable**: No parsing inconsistencies between systems
 
-### 2. Configure App Permissions
+## Setup
 
-1. In your app settings, go to **"OAuth & Permissions"** in the sidebar
-2. Scroll down to **"Scopes"** → **"Bot Token Scopes"**
-3. Add the following scopes:
-   - `app_mentions:read` - To receive mentions
-   - `chat:write` - To send messages
-   - `channels:history` - To read channel messages
-   - `groups:history` - To read private channel messages
-   - `im:history` - To read direct messages (optional)
-   - `mpim:history` - To read group direct messages (optional)
-   - `users:read` - To get user information
+### Prerequisites
 
-### 3. Enable Socket Mode
+- Python 3.8+
+- Slack workspace with admin access
+- GitHub repository
+- OpenAI API key (for SpoonOS)
 
-1. Go to **"Socket Mode"** in the sidebar
-2. Toggle **"Enable Socket Mode"** to ON
-3. Give your token a name (e.g., "Socket Token")
-4. Click **"Generate"**
-5. Copy the token (starts with `xapp-`) - this is your `SLACK_APP_TOKEN`
-
-### 4. Subscribe to Events
-
-1. Go to **"Event Subscriptions"** in the sidebar
-2. Toggle **"Enable Events"** to ON
-3. Under **"Subscribe to bot events"**, add these **REQUIRED** events:
-
-   - `app_mention` - When the bot is mentioned (**REQUIRED**)
-   - `message.channels` - To receive replies in threads (**REQUIRED for conversations**)
-   - `message.groups` - To work in private channels (optional)
-   - `message.im` - To work in DMs (optional)
-
-4. Click **"Save Changes"**
-
-⚠️ **Important**: Without `message.channels`, the bot won't respond to your follow-up messages in threads!
-
-### 5. Install the App to Your Workspace
-
-1. Go to **"Install App"** in the sidebar
-2. Click **"Install to Workspace"**
-3. Review the permissions and click **"Allow"**
-4. Copy the **"Bot User OAuth Token"** (starts with `xoxb-`) - this is your `SLACK_BOT_TOKEN`
-
-### 6. Get Your Signing Secret
-
-1. Go to **"Basic Information"** in the sidebar
-2. Scroll down to **"App Credentials"**
-3. Copy the **"Signing Secret"** - this is your `SLACK_SIGNING_SECRET`
-
-### 7. Set Up the Bot Locally
-
-1. Clone or download this repository
-
-2. Install Python dependencies:
+### 1. Install Python Dependencies
 
 ```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Install SpoonOS from GitHub
+pip install git+https://github.com/YourOrg/spoonos.git
 ```
 
-3. Create a `.env` file in the project root with your credentials:
+### 2. Set Up Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app
+2. Enable **Socket Mode** in Settings → Socket Mode
+3. Add the following **Bot Token Scopes** under OAuth & Permissions:
+   - `app_mentions:read` - Read mention events
+   - `channels:history` - Read channel messages
+   - `chat:write` - Send messages
+   - `users:read` - Read user info
+   - `channels:read` - View channels
+
+4. **Subscribe to Events** under Event Subscriptions:
+   - `app_mention` - When bot is mentioned
+   - `message.channels` - Required for thread replies
+   - `message.groups` - For private channels
+   - `message.im` - For direct messages
+
+5. **Install the app** to your workspace
+6. Copy the following tokens from the Slack app settings:
+   - **Bot Token** (starts with `xoxb-`) from OAuth & Permissions
+   - **App Token** (starts with `xapp-`) from Basic Information → App-Level Tokens
+     - When generating, enable `connections:write` scope
+
+### 3. Set Up GitHub
+
+1. Go to GitHub Settings → Developer settings → Personal access tokens
+2. Generate a new token with these scopes:
+   - `repo` (full control)
+   - `write:packages`
+3. Copy the token
+
+### 4. Configure Environment Variables
+
+Create a `.env` file in the project root:
 
 ```bash
-SLACK_BOT_TOKEN=xoxb-your-bot-token-here
-SLACK_APP_TOKEN=xapp-your-app-token-here
-SLACK_SIGNING_SECRET=your-signing-secret-here
+# Slack Configuration
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_APP_TOKEN=xapp-your-app-token
 
-# Optional: For GitHub PR creation
-GITHUB_TOKEN=ghp_your-github-token-here
+# GitHub Configuration
+GITHUB_TOKEN=ghp_your_github_token
 GITHUB_REPO=username/repository-name
+
+# OpenAI Configuration (for SpoonOS)
+OPENAI_API_KEY=sk-your-openai-key
+OPENAI_MODEL=gpt-4o
+
+# SpoonOS Configuration
+SPOONOS_PROVIDER=openai
 ```
 
-**Note:** GitHub integration is optional. See [GITHUB_SETUP.md](GITHUB_SETUP.md) for detailed setup instructions.
-
-4. Run the bot:
+### 5. Run the Bot
 
 ```bash
 python slack_bot.py
 ```
 
 You should see:
-
 ```
-⚡️ Starting Slack bot in Socket Mode...
 ⚡️ Bolt app is running!
+INFO - AI Code Generator initialized successfully with SpoonOS
 ```
 
 ## Usage
 
-### Basic Context Responses
+### Creating Pull Requests
 
-In any channel where the bot is invited:
+1. **Start a conversation** by mentioning the bot:
+   ```
+   @bot Create a login page with email and password
+   ```
 
-1. Type `@YourBotName hello` (replace with your bot's name)
-2. The bot will respond with:
-   - Your original message
-   - Recent messages from the thread (if in a thread)
-   - Recent messages from the channel
-   - Total number of messages it has access to
+2. **Bot responds with proposed changes** (concrete code, no questions):
+   ```
+   📝 PROPOSED CHANGESET
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━
+   
+   📄 File: login.html [NEW]
+   <html>
+   ...
+   
+   📄 File: auth.py [MODIFIED]
+   def login(username, password):
+   ...
+   ```
 
-### Example Interaction
+3. **Refine the changes** in the thread:
+   ```
+   Add a "Remember Me" checkbox
+   ```
+   
+   Bot responds with updated changeset.
 
+4. **Create the PR** when ready:
+   ```
+   make PR
+   ```
+   Or click the "🚀 Make PR with These Changes" button
+
+5. **PR is created** using the exact cached code from the preview!
+
+### Managing Pull Requests
+
+**Merge a PR:**
 ```
-User: @ContextBot what's the status on the project?
-
-Bot: Hi @User! I've been mentioned and I have context from the channel.
-
-Your message: @ContextBot what's the status on the project?
-
-📚 Recent Channel Messages:
-  [2025-11-22 10:15:30] Alice: We finished the design phase
-  [2025-11-22 10:20:15] Bob: Starting development next week
-  [2025-11-22 10:25:45] Charlie: Budget approved!
-  [2025-11-22 10:30:20] User: @ContextBot what's the status on the project?
-
-I have access to the last 25 messages from this channel.
-
-💡 Tip: You can ask me to create a PR for [task description] to generate a pull request!
-```
-
-### Creating GitHub Pull Requests
-
-If you've set up GitHub integration (see [GITHUB_SETUP.md](GITHUB_SETUP.md)), you can ask the bot to create pull requests:
-
-```
-User: @ContextBot create a PR for adding user authentication
-
-Bot: 🤖 Got it @User! Creating a pull request for: adding user authentication
-
-Please wait...
-
-[A moment later...]
-
-✅ Pull Request Created Successfully!
-
-📋 Task: adding user authentication
-🔢 PR #: 42
-🌿 Branch: bot-task-20251122-143045
-🔗 URL: https://github.com/yuktmitash21/slack-code/pull/42
-
-📝 Changes: Created new file: bot_tasks/task_20251122-143045.txt
-
-The PR is ready for review! 🎉
+@bot merge PR 123
 ```
 
-**Other PR command variations:**
-
-- `@BotName make a pull request for bug fix`
-- `@BotName open a PR to refactor database code`
-- `@BotName submit a PR for new feature`
-- `@BotName generate a pull request for documentation updates`
-
-### Merging Pull Requests
-
-Once a PR is created (or if you have existing PRs), you can merge them directly from Slack:
-
+**Revert a merged PR:**
 ```
-User: @ContextBot merge PR 42
-
-Bot: 🔄 Got it @User! Merging PR #42 using merge method...
-
-Please wait...
-
-[A moment later...]
-
-✅ Pull Request Merged Successfully!
-
-🔢 PR #: 42
-📋 Title: 🤖 Bot Task: adding user authentication
-🌿 Branch: bot-task-20251122-143045
-🔀 Merge Method: merge
-🔗 URL: https://github.com/yuktmitash21/slack-code/pull/42
-
-The changes have been merged to master! 🎉
+@bot revert PR 123
 ```
-
-**Merge command variations:**
-
-- `@BotName merge PR 42` - Standard merge
-- `@BotName merge #42` - Using # notation
-- `@BotName merge 42` - Simple format
-- `@BotName merge PR 42 squash` - Squash and merge
-- `@BotName merge PR 42 rebase` - Rebase and merge
-
-**Merge Methods:**
-
-- **merge** (default): Creates a merge commit
-- **squash**: Squashes all commits into one
-- **rebase**: Rebases and merges commits
-
-### Reverting/Unmerging Pull Requests
-
-If you need to undo a merged PR, you can create a revert PR:
-
-```
-User: @ContextBot unmerge PR 42
-
-Bot: 🔄 Got it @User! Creating a revert PR for #42...
-
-Please wait...
-
-[A moment later...]
-
-✅ Revert Pull Request Created Successfully!
-
-🔄 Reverting PR #: 42
-📋 Original Title: 🤖 Bot Task: adding user authentication
-🔗 Original PR: https://github.com/yuktmitash21/slack-code/pull/42
-
-**New Revert PR:**
-🔢 PR #: 45
-🌿 Branch: revert-pr-42-20251122-150045
-🔗 URL: https://github.com/yuktmitash21/slack-code/pull/45
-
-The revert PR is ready for review! You can now merge it to undo the original changes.
-
-💡 Tip: Merge it with @bot merge PR 45
-```
-
-**Unmerge command variations:**
-
-- `@BotName unmerge PR 42` - Create revert PR
-- `@BotName revert PR 42` - Same as unmerge
-- `@BotName unmerge #42` - Using # notation
-- `@BotName revert 42` - Simple format
-
-**How it works:**
-
-1. Clones the repository to a temporary directory
-2. Creates a new branch with name `revert-pr-{number}-{timestamp}`
-3. Executes `git revert -m 1 <merge_commit_sha>` to create actual revert commits
-4. Pushes the revert branch to GitHub
-5. Opens a new PR with the actual reverted code
-6. You can then merge the revert PR to complete the undo
-7. Cleans up temporary directory
-
-**Technical Details:**
-
-- Uses `gitpython` library for git operations
-- Properly handles merge commits with `-m 1` flag
-- Creates real revert commits that can be merged safely
 
 ## How It Works
 
-### Context Gathering
+### Conversational Flow
 
-The bot uses two methods to gather context:
+1. **Initial Request**: User mentions bot with a task
+2. **Codebase Analysis**: Bot fetches and caches entire repository
+3. **AI Generation**: SpoonOS CodingAgent generates code with full context
+4. **Cache Results**: Parsed files stored in conversation state
+5. **Preview**: Formatted changeset shown to user
+6. **Refinement**: User can request changes in thread
+7. **PR Creation**: Cached files used directly (no second AI call)
 
-1. **Channel Context** (`get_channel_context`):
+### File Operations
 
-   - Fetches up to 50 recent messages from the channel
-   - Filters out bot messages and system messages
-   - Formats messages with timestamps and usernames
+The bot can:
+- ✅ **Create** new files (`[NEW]` tag)
+- ✅ **Modify** existing files (`[MODIFIED]` tag)
+- ✅ **Delete** files (`[DELETED]` tag)
 
-2. **Thread Context** (`get_thread_context`):
-   - If mentioned in a thread, fetches all messages in that thread
-   - Provides focused context for threaded conversations
+### Message Chunking
 
-### Event Handling
-
-- The bot listens for `app_mention` events
-- When mentioned, it gathers context and formulates a response
-- Responses are sent in the same thread if the mention was in a thread
-
-## Project Structure
-
-```
-slack-bot/
-├── slack_bot.py          # Main bot application
-├── github_helper.py      # GitHub PR creation logic
-├── ai_agent.py           # AI code generation (SpoonOS)
-├── requirements.txt      # Python dependencies
-├── .env                  # Environment variables (create this)
-├── .gitignore           # Git ignore file
-├── README.md            # This file
-├── SETUP_GUIDE.md       # Detailed Slack setup guide
-├── GITHUB_SETUP.md      # GitHub integration setup guide
-├── AI_AGENT_SETUP.md    # AI code generation setup
-├── COMMANDS.md          # Command reference
-└── QUICK_START.md       # Quick start guide
-```
+Long AI responses are automatically split into 2900-character chunks to comply with Slack's 3000-character limit.
 
 ## Troubleshooting
 
-### Bot doesn't respond to mentions
+### Bot not responding in threads
 
-- Verify the bot is invited to the channel (`/invite @YourBotName`)
-- Check that the bot is running (`python slack_bot.py`)
-- Verify all three environment variables are set correctly in `.env`
-- Check the app has the required permissions in Slack API settings
+**Symptom**: Bot responds to initial mention but not follow-up messages
 
-### "SLACK_APP_TOKEN not found" error
+**Solution**: 
+1. Go to Slack App Settings → Event Subscriptions
+2. Add these events:
+   - `message.channels`
+   - `message.groups`
+   - `message.im`
+3. **Reinstall the app** to your workspace (important!)
 
-- Make sure you've enabled Socket Mode in your app settings
-- Verify the `.env` file exists and contains `SLACK_APP_TOKEN=xapp-...`
+### AI not generating code
 
-### Bot can't read message history
+**Symptom**: Bot shows "AI not available" message
 
-- Ensure you've added the history scopes: `channels:history`, `groups:history`
-- After adding scopes, reinstall the app to your workspace
-- The bot must be a member of the channel to read its history
+**Solutions**:
+1. Check SpoonOS installation: `pip show spoon-ai`
+2. Verify OpenAI API key in `.env`
+3. Check logs for SpoonOS initialization errors
 
-### Merge command fails
+### Dependency conflicts
 
-- Verify the PR number exists and is correct
-- Check that the PR is not already merged or closed
-- Ensure the PR has no merge conflicts
-- Verify your GitHub token has write access to the repository
-- Make sure branch protection rules allow the merge
+**Symptom**: Errors during `pip install`
 
-### Unmerge/revert command fails
-
-- Verify the PR number exists and was merged
-- Only merged PRs can be reverted
-- Check your GitHub token has write access to create branches and PRs
-- If the revert PR is created but empty, you may need to manually add the revert commits
-
-### Connection issues
-
-- Socket Mode requires a stable internet connection
-- If the bot disconnects frequently, check your network
-- The bot will automatically reconnect in most cases
-
-## Customization
-
-### Adjust Context Length
-
-In `slack_bot.py`, modify the `limit` parameter:
-
-```python
-# Fetch last 100 messages instead of 50
-channel_context = get_channel_context(client, channel_id, limit=100)
+**Solution**:
+```bash
+# Start fresh
+rm -rf venv
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### Change Response Format
+### "Conversation not found" error
 
-Modify the response building section in `handle_app_mention`:
+**Symptom**: Clicking "Make PR" button shows error
 
-```python
-response = f"Hi <@{user_id}>! Custom message here.\n\n"
-# Add your custom formatting
+**Cause**: Button was from an old message before PR was created via text
+
+**Solution**: Start a new conversation - the old one was already completed
+
+## Development
+
+### Project Structure
+
+```
+slack-bot/
+├── slack_bot.py           # Main bot application
+├── github_helper.py       # GitHub API integration
+├── ai_agent.py           # SpoonOS wrapper for code generation
+├── requirements.txt      # Python dependencies
+└── .env                 # Configuration (not in git)
 ```
 
-### Add More Event Handlers
+### Key Components
 
-Add new event handlers for different Slack events:
+**`slack_bot.py`**:
+- Handles Slack events and commands
+- Manages conversation state
+- Coordinates preview and PR creation
+- **Caches parsed files** from preview
 
-```python
-@app.event("reaction_added")
-def handle_reaction(event, say):
-    # Handle reaction events
-    pass
-```
+**`github_helper.py`**:
+- GitHub API operations (branch, commit, PR)
+- **Accepts cached files** to skip AI calls
+- Handles file creation/modification/deletion
 
-## Security Notes
-
-- Never commit your `.env` file to version control
-- Keep your tokens secure and rotate them if compromised
-- Use environment variables for all sensitive data
-- The `.env` file is already in `.gitignore` to prevent accidental commits
-
-## GitHub PR Feature
-
-The bot can now create GitHub pull requests! Currently, it creates placeholder PRs with random changes to demonstrate the functionality.
-
-**Current behavior:**
-
-- Creates a new branch
-- Makes a random change (adds comment to README, creates task log, or updates bot stats)
-- Opens a pull request with your task description
-
-**Future enhancements:**
-
-- Parse task descriptions to generate actual code
-- Integrate with AI/LLM for intelligent code generation
-- Read existing code and make contextual modifications
-- Run tests before creating PRs
-
-See [GITHUB_SETUP.md](GITHUB_SETUP.md) for complete setup instructions.
-
-## Contributing
-
-Feel free to fork this project and customize it for your needs. Some ideas for enhancements:
-
-- ✅ **GitHub PR creation** (implemented!)
-- ✅ **AI code generation with SpoonOS** (implemented!)
-- Store conversation history in a database
-- Add sentiment analysis
-- Implement custom commands
-- Add support for direct messages
-- Enhanced AI with deeper repository analysis
-- Add automated testing before PR creation
-- Integrate more SpoonOS tools (crypto, DeFi, etc.)
+**`ai_agent.py`**:
+- Wraps SpoonOS CodingAgent
+- Parses AI output into file operations
+- Supports multiple filename formats
 
 ## License
 
-This project is open source and available under the MIT License.
+MIT License - Feel free to use and modify!
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
 ## Support
 
-For issues with:
-
-- **Slack API**: Check [Slack API Documentation](https://api.slack.com/docs)
-- **slack-bolt**: See [Bolt for Python Documentation](https://slack.dev/bolt-python/concepts)
-- **This bot**: Open an issue in the repository
-
----
-
-Happy botting! 🤖
+For issues or questions:
+1. Check the Troubleshooting section
+2. Review logs in terminal
+3. Check Slack app configuration
+4. Verify environment variables
