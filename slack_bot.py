@@ -7,6 +7,7 @@ import os
 import logging
 import re
 from datetime import datetime
+from stats_tracker import log_pr_creation, mark_pr_merged
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
@@ -488,7 +489,57 @@ def download_slack_image(image_url, client, file_info=None):
         return None
 
 
-def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, channel_id=None, is_initial=False, image_data=None):
+def _get_channel_display_name(client, channel_id):
+    """
+    Resolve a human-friendly channel name (e.g. #backend, DM @alice)
+    """
+    name = channel_id
+    try:
+        info = client.conversations_info(channel=channel_id)
+        channel = info.get("channel", {})
+        if not channel:
+            return channel_id
+
+        if channel.get("is_im"):
+            user_id = channel.get("user")
+            if user_id:
+                try:
+                    user_info = client.users_info(user=user_id)
+                    user = user_info.get("user", {})
+                    display = user.get("real_name") or user.get("name") or user_id
+                    return f"DM @{display}"
+                except Exception:
+                    return f"DM {user_id}"
+            return "Direct Message"
+
+        if channel.get("is_mpim"):
+            return channel.get("name") or channel.get("name_normalized") or channel_id
+
+        channel_name = (
+            channel.get("name")
+            or channel.get("name_normalized")
+            or channel.get("id")
+            or channel_id
+        )
+        if channel_name.startswith("#"):
+            return channel_name
+        return f"#{channel_name}"
+    except Exception as e:
+        logger.warning(f"Could not resolve channel name for {channel_id}: {e}")
+        return name
+
+
+def handle_pr_conversation(
+    user_id,
+    message_text,
+    say,
+    thread_ts,
+    client=None,
+    channel_id=None,
+    is_initial=False,
+    image_data=None,
+    channel_name=None,
+):
     """
     Handle conversational PR planning - discuss requirements before creating PR
     
@@ -500,6 +551,8 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
         client: Slack client
         channel_id: Channel ID
         is_initial: True if this is the initial "create PR" command
+        image_data: Optional dict holding base64 encoded image for vision models
+        channel_name: Optional Slack channel name (for analytics/dashboard)
     """
     logger.info("=" * 80)
     logger.info("💬 HANDLE_PR_CONVERSATION FUNCTION ENTERED")
@@ -558,15 +611,19 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             "user_id": user_id,
             "thread_ts": thread_ts,
             "channel_id": channel_id,
+            "channel_name": channel_name or channel_id,
             "plan": None,
             "codebase_context": None,  # Will be fetched once and cached
             "cached_files": [],  # Parsed files from preview (for PR creation)
             "image_data": image_data  # Store image for vision API
         }
-    elif image_data:
-        # Update image data if provided in follow-up message
-        pr_conversations[conversation_key]["image_data"] = image_data
-        logger.info("📸 Updated image data in conversation")
+    else:
+        if image_data:
+            # Update image data if provided in follow-up message
+            pr_conversations[conversation_key]["image_data"] = image_data
+            logger.info("📸 Updated image data in conversation")
+        if channel_name:
+            pr_conversations[conversation_key]["channel_name"] = channel_name
     
     # Always use the stored user_id to tag
     stored_user_id = pr_conversations[conversation_key]["user_id"]
@@ -601,6 +658,8 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             codebase_context=codebase_context,
             cached_files=cached_files  # Use cached result from preview!
         )
+        if result.get("success"):
+            _record_pr_creation(conversation_key, result.get("pr_number"))
         _send_pr_result(result, pr_conversations[conversation_key]["initial_task"], say, thread_ts, stored_user_id)
         
         # Clean up conversation (button can still be clicked if this was triggered by text)
@@ -836,6 +895,24 @@ Rules:
         )
 
 
+def _record_pr_creation(conversation_key, pr_number):
+    """Persist analytics data for dashboard consumption."""
+    if not pr_number:
+        return
+    try:
+        conv = pr_conversations.get(conversation_key, {})
+        channel_id = conv.get("channel_id") or conversation_key or "unknown-channel"
+        channel_name = conv.get("channel_name") or channel_id
+        log_pr_creation(
+            pr_number=int(pr_number),
+            channel_id=channel_id,
+            channel_name=channel_name,
+            thread_ts=conversation_key,
+        )
+    except Exception as e:
+        logger.error(f"Failed to record PR creation analytics: {e}")
+
+
 def _send_pr_result(result, task_description, say, thread_ts, user_id):
     """Helper to send PR creation result"""
     try:
@@ -958,6 +1035,10 @@ def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
     result = github_helper.merge_pr(pr_number, merge_method)
     
     if result["success"]:
+        try:
+            mark_pr_merged(result.get('pr_number'))
+        except Exception as e:
+            logger.error(f"Failed to log merged PR analytics: {e}")
         response = f"""✅ *Pull Request Merged Successfully!*
 
 🔢 *PR #:* {result['pr_number']}
@@ -1116,6 +1197,8 @@ def handle_app_mention(event, client, say, logger):
         
         logger.info(f"Bot mentioned by user {user_id} in channel {channel_id}")
         
+        channel_name = _get_channel_display_name(client, channel_id)
+        
         # Check for attached images (wireframes, screenshots, etc.)
         image_url, file_info = extract_image_from_message(event, client, logger)
         image_data = None
@@ -1139,7 +1222,18 @@ def handle_app_mention(event, client, say, logger):
         # Check if this is a continuation of a PR conversation first
         if thread_ts in pr_conversations:
             logger.info(f"Continuing PR conversation in thread {thread_ts}")
-            handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False, image_data=image_data)
+            stored_channel_name = pr_conversations[thread_ts].get("channel_name") or channel_name
+            handle_pr_conversation(
+                user_id,
+                message_text,
+                say,
+                thread_ts,
+                client,
+                channel_id,
+                is_initial=False,
+                image_data=image_data,
+                channel_name=stored_channel_name,
+            )
             return
         
         # Use AI-powered command classification
@@ -1150,8 +1244,19 @@ def handle_app_mention(event, client, say, logger):
             # Extract task description (for CREATE_PR) or use the message as-is (for REFINE)
             task_description = command.get("task_description", message_text)
             logger.info(f"🤖 AI detected {command['command']} command: {task_description}")
-            handle_pr_conversation(user_id, task_description, say, thread_ts, client, channel_id, is_initial=True)
+            handle_pr_conversation(
+                user_id,
+                task_description,
+                say,
+                thread_ts,
+                client,
+                channel_id,
+                is_initial=True,
+                image_data=image_data,
+                channel_name=channel_name,
+            )
             return
+            
         
         elif command["command"] == "MERGE_PR":
             pr_number = command.get("pr_number")
@@ -1338,7 +1443,10 @@ def handle_make_pr_button_click(ack, body, client, logger):
             cached_files=cached_files  # Use cached result from preview!
         )
         
-        # Send result with merge button
+        if result.get("success"):
+            _record_pr_creation(thread_ts, result.get("pr_number"))
+        
+        # Send result
         if result["success"]:
             pr_number = result.get('pr_number')
             response = f"""<@{stored_user_id}> ✅ *Pull Request Created Successfully!*
@@ -1571,6 +1679,7 @@ def handle_message_events(event, say, client, logger):
     user_id = event.get("user")
     message_text = event.get("text", "")
     channel_id = event.get("channel")
+    channel_name = pr_conversations[thread_ts].get("channel_name")
     
     logger.info(f"   ✅ Processing message in PR conversation thread!")
     logger.info("=" * 80)
@@ -1585,7 +1694,16 @@ def handle_message_events(event, say, client, logger):
     
     # Handle the conversation
     try:
-        handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False)
+        handle_pr_conversation(
+            user_id,
+            message_text,
+            say,
+            thread_ts,
+            client,
+            channel_id,
+            is_initial=False,
+            channel_name=channel_name,
+        )
         logger.info("✅ handle_pr_conversation completed successfully")
     except Exception as e:
         logger.error(f"❌ handle_pr_conversation failed with error: {e}")

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slack Codegen Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0b1221;
+        --panel: #101b33;
+        --accent: #38bdf8;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --border: rgba(148, 163, 184, 0.2);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        min-height: 100vh;
+      }
+
+      header.top-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 24px clamp(16px, 5vw, 64px);
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+
+      header h1 {
+        margin: 0;
+        font-weight: 600;
+        font-size: clamp(20px, 3vw, 28px);
+      }
+
+      .filters {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      label span {
+        font-size: 14px;
+        color: var(--muted);
+        margin-right: 8px;
+      }
+
+      select {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 8px 12px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      .merge-rate-pill {
+        background: linear-gradient(120deg, rgba(56, 189, 248, 0.2), rgba(129, 140, 248, 0.25));
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        padding: 12px 18px;
+        border-radius: 999px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        min-width: 180px;
+      }
+
+      .merge-rate-pill span {
+        font-size: 13px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .merge-rate-pill strong {
+        font-size: 28px;
+        font-weight: 600;
+      }
+
+      .summary-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        padding: 24px clamp(16px, 5vw, 64px);
+      }
+
+      .summary-card {
+        background: var(--panel);
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .summary-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .summary-card strong {
+        font-size: 28px;
+        font-weight: 600;
+      }
+
+      main {
+        padding: 0 clamp(16px, 5vw, 64px) 48px;
+        display: grid;
+        grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+        gap: 24px;
+        align-items: flex-start;
+      }
+
+      .panel {
+        background: var(--panel);
+        border-radius: 18px;
+        border: 1px solid var(--border);
+        padding: 24px;
+      }
+
+      .panel-header {
+        margin-bottom: 16px;
+      }
+
+      .panel-header h2 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      .panel-header p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      canvas {
+        width: 100%;
+        height: 100%;
+      }
+
+      .chart-wrapper {
+        position: relative;
+        width: 100%;
+        height: 320px;
+      }
+
+      .chart-wrapper.small {
+        height: 280px;
+      }
+
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        header.top-bar {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .merge-rate-pill {
+          align-self: stretch;
+        }
+      }
+
+      .empty-state {
+        margin-top: 24px;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px dashed var(--border);
+        text-align: center;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      .error-banner {
+        background: #be123c;
+        color: #fff;
+        padding: 12px;
+        margin: 16px clamp(16px, 5vw, 64px) 0;
+        border-radius: 10px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="error-banner" class="error-banner"></div>
+    <header class="top-bar">
+      <div class="title-block">
+        <h1>Slack Codegen Dashboard</h1>
+        <div class="filters">
+          <label>
+            <span>Date Range</span>
+            <select id="date-range">
+              <option value="1h">Last 1 hour</option>
+              <option value="6h">Last 6 hours</option>
+              <option value="today">Today</option>
+              <option value="7d" selected>Last 7 days</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="merge-rate-pill">
+        <span>Merge Rate</span>
+        <strong id="merge-rate-value">--%</strong>
+      </div>
+    </header>
+
+    <section class="summary-cards">
+      <div class="summary-card">
+        <p>Total PRs</p>
+        <strong id="total-prs">0</strong>
+      </div>
+      <div class="summary-card">
+        <p>Merged PRs</p>
+        <strong id="merged-prs">0</strong>
+      </div>
+      <div class="summary-card">
+        <p>Avg PRs / Period</p>
+        <strong id="avg-prs">0</strong>
+      </div>
+    </section>
+
+    <main>
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Usage & Throughput</h2>
+          <p>PRs generated by the bot over the selected period</p>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="pr-over-time-chart"></canvas>
+        </div>
+        <div id="line-empty-state" class="empty-state hidden">No PR activity for this date range.</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Top Channels</h2>
+          <p>Channels with the most bot-generated PRs</p>
+        </div>
+        <div class="chart-wrapper small">
+          <canvas id="top-channels-chart"></canvas>
+        </div>
+        <div id="bar-empty-state" class="empty-state hidden">No channel activity for this range.</div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="./dashboard.js"></script>
+  </body>
+</html>
+
