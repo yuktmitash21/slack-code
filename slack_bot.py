@@ -6,6 +6,7 @@ and can create GitHub pull requests
 import os
 import logging
 import re
+import time
 from datetime import datetime
 from stats_tracker import log_pr_creation, mark_pr_merged
 from slack_bolt import App
@@ -593,11 +594,15 @@ def handle_pr_conversation(
                 codebase_context = None
             
             # Create PR directly with the deletion task, passing thread_ts for unique branch naming
+            start_time = time.time()
             result = github_helper.create_random_pr(
                 message_text, 
                 thread_context=thread_ts,
                 codebase_context=codebase_context
             )
+            processing_time_ms = int((time.time() - start_time) * 1000)
+            if result.get("success"):
+                _record_pr_creation(thread_ts, result.get("pr_number"), processing_time_ms)
             _send_pr_result(result, message_text, say, thread_ts, user_id)
             return
     
@@ -652,14 +657,16 @@ def handle_pr_conversation(
         cached_files = pr_conversations[conversation_key].get("cached_files", [])
         
         # Pass thread_ts as context for unique branch naming AND codebase context
+        start_time = time.time()
         result = github_helper.create_random_pr(
             all_messages, 
             thread_context=thread_ts,
             codebase_context=codebase_context,
             cached_files=cached_files  # Use cached result from preview!
         )
+        processing_time_ms = int((time.time() - start_time) * 1000)
         if result.get("success"):
-            _record_pr_creation(conversation_key, result.get("pr_number"))
+            _record_pr_creation(conversation_key, result.get("pr_number"), processing_time_ms)
         _send_pr_result(result, pr_conversations[conversation_key]["initial_task"], say, thread_ts, stored_user_id)
         
         # Clean up conversation (button can still be clicked if this was triggered by text)
@@ -895,7 +902,7 @@ Rules:
         )
 
 
-def _record_pr_creation(conversation_key, pr_number):
+def _record_pr_creation(conversation_key, pr_number, processing_time_ms=None):
     """Persist analytics data for dashboard consumption."""
     if not pr_number:
         return
@@ -908,6 +915,7 @@ def _record_pr_creation(conversation_key, pr_number):
             channel_id=channel_id,
             channel_name=channel_name,
             thread_ts=conversation_key,
+            processing_time_ms=processing_time_ms,
         )
     except Exception as e:
         logger.error(f"Failed to record PR creation analytics: {e}")
@@ -1436,15 +1444,17 @@ def handle_make_pr_button_click(ack, body, client, logger):
         cached_files = conv.get("cached_files", [])
         
         # Create the PR using cached files (no second AI call!)
+        start_time = time.time()
         result = github_helper.create_random_pr(
             all_messages, 
             thread_context=thread_ts,
             codebase_context=codebase_context,
             cached_files=cached_files  # Use cached result from preview!
         )
+        processing_time_ms = int((time.time() - start_time) * 1000)
         
         if result.get("success"):
-            _record_pr_creation(thread_ts, result.get("pr_number"))
+            _record_pr_creation(thread_ts, result.get("pr_number"), processing_time_ms)
         
         # Send result
         if result["success"]:

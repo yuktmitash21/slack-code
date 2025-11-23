@@ -1,11 +1,12 @@
 (() => {
   const HOUR_MS = 60 * 60 * 1000;
   const DAY_MS = 24 * HOUR_MS;
-  const DEFAULT_RANGE = "7d";
+  const DEFAULT_RANGE = "3d";
 
   let rawData = [];
   let lineChart = null;
   let barChart = null;
+  let processingTimeChart = null;
 
   const elements = {
     dateRange: document.getElementById("date-range"),
@@ -13,8 +14,11 @@
     totalPrs: document.getElementById("total-prs"),
     mergedPrs: document.getElementById("merged-prs"),
     avgPrs: document.getElementById("avg-prs"),
+    avgPrsLabel: document.getElementById("avg-prs-label"),
+    avgProcessingTime: document.getElementById("avg-processing-time"),
     lineEmpty: document.getElementById("line-empty-state"),
     barEmpty: document.getElementById("bar-empty-state"),
+    processingEmpty: document.getElementById("processing-empty-state"),
     errorBanner: document.getElementById("error-banner"),
   };
 
@@ -54,6 +58,7 @@
     updateSummary(filtered, meta);
     renderLineChart(filtered, meta);
     renderBarChart(filtered);
+    renderProcessingTimeChart(filtered);
   }
 
   function resolveRangeMeta(rangeKey) {
@@ -73,14 +78,14 @@
         const hours = Math.max(1, Math.ceil((now - start) / HOUR_MS));
         return { mode: "hour", start, end: now, bucketMinutes: 60, hours };
       }
-      case "7d":
+      case "3d":
       default: {
         const end = new Date(now);
         end.setHours(23, 59, 59, 999);
         const start = new Date(end);
-        start.setDate(start.getDate() - 6);
+        start.setDate(start.getDate() - 2);
         start.setHours(0, 0, 0, 0);
-        return { mode: "day", start, end, days: 7 };
+        return { mode: "day", start, end, days: 3 };
       }
     }
   }
@@ -104,14 +109,40 @@
     elements.mergeRate.textContent = `${mergeRate.toFixed(1)}%`;
 
     let windowUnits;
+    let timeUnit;
     if (meta.mode === "day") {
       windowUnits = meta.days || Math.max(1, Math.round((meta.end - meta.start) / DAY_MS));
+      timeUnit = windowUnits === 1 ? "day" : "day";
     } else {
       windowUnits = meta.hours || Math.max(1, Math.round((meta.end - meta.start) / HOUR_MS));
+      timeUnit = windowUnits === 1 ? "hour" : "hour";
     }
+
+    // Update the label to show the actual time unit
+    elements.avgPrsLabel.textContent = `Avg PRs / ${timeUnit}`;
 
     const avgPerPeriod = total === 0 ? 0 : total / windowUnits;
     elements.avgPrs.textContent = avgPerPeriod.toFixed(1);
+
+    // Calculate average processing time
+    const prsWithTime = filtered.filter((item) => item.processing_time_ms != null);
+    if (prsWithTime.length > 0) {
+      const totalTimeMs = prsWithTime.reduce((sum, item) => sum + item.processing_time_ms, 0);
+      const avgTimeMs = totalTimeMs / prsWithTime.length;
+      const avgTimeSeconds = avgTimeMs / 1000;
+      
+      if (avgTimeSeconds < 1) {
+        elements.avgProcessingTime.textContent = `${avgTimeMs.toFixed(0)}ms`;
+      } else if (avgTimeSeconds < 60) {
+        elements.avgProcessingTime.textContent = `${avgTimeSeconds.toFixed(1)}s`;
+      } else {
+        const minutes = Math.floor(avgTimeSeconds / 60);
+        const seconds = Math.floor(avgTimeSeconds % 60);
+        elements.avgProcessingTime.textContent = `${minutes}m ${seconds}s`;
+      }
+    } else {
+      elements.avgProcessingTime.textContent = "--";
+    }
   }
 
   function renderLineChart(filtered, meta) {
@@ -189,9 +220,11 @@
       return acc;
     }, {});
 
-    const topChannels = Object.entries(channelCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
+    const allChannels = Object.entries(channelCounts)
+      .sort((a, b) => b[1] - a[1]);
+
+    const topChannels = allChannels.slice(0, 7);
+    const others = allChannels.slice(7);
 
     if (!topChannels.length) {
       elements.barEmpty.classList.remove("hidden");
@@ -200,33 +233,78 @@
 
     elements.barEmpty.classList.add("hidden");
 
+    // Prepare data for pie chart
+    const labels = topChannels.map(([name]) => name);
+    const data = topChannels.map(([_, count]) => count);
+
+    // Add "Others" slice if there are more than 7 channels
+    if (others.length > 0) {
+      const othersCount = others.reduce((sum, [_, count]) => sum + count, 0);
+      labels.push("Others");
+      data.push(othersCount);
+    }
+
+    // Calculate total from actual pie chart data (sum of all values)
+    // This ensures percentages are calculated correctly based on what's shown in the chart
+    const total = data.reduce((sum, count) => sum + count, 0);
+
+    // Generate colors for pie chart
+    const colors = [
+      "rgba(56, 189, 248, 0.8)",   // cyan
+      "rgba(129, 140, 248, 0.8)",   // indigo
+      "rgba(167, 139, 250, 0.8)",   // purple
+      "rgba(236, 72, 153, 0.8)",    // pink
+      "rgba(251, 146, 60, 0.8)",    // orange
+      "rgba(34, 197, 94, 0.8)",     // green
+      "rgba(59, 130, 246, 0.8)",    // blue
+      "rgba(148, 163, 184, 0.8)",   // gray for Others
+    ];
+
     barChart = new Chart(ctx, {
-      type: "bar",
+      type: "pie",
       data: {
-        labels: topChannels.map(([name]) => name),
+        labels: labels,
         datasets: [
           {
-            label: "PR count",
-            data: topChannels.map(([_, count]) => count),
-            backgroundColor: "rgba(129, 140, 248, 0.7)",
-            borderRadius: 6,
+            data: data,
+            backgroundColor: colors.slice(0, labels.length),
+            borderColor: "rgba(11, 18, 33, 0.8)",
+            borderWidth: 2,
           },
         ],
       },
       options: {
         maintainAspectRatio: false,
+        responsive: true,
         plugins: {
-          legend: { display: false },
-        },
-        scales: {
-          x: {
-            ticks: { color: "#94a3b8" },
-            grid: { display: false },
+          legend: {
+            display: true,
+            position: "right",
+            labels: {
+              color: "#94a3b8",
+              padding: 12,
+              font: {
+                size: 12,
+              },
+            },
           },
-          y: {
-            beginAtZero: true,
-            ticks: { color: "#94a3b8", precision: 0 },
-            grid: { color: "rgba(148, 163, 184, 0.15)" },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const label = context.label || "";
+                const value = context.parsed || 0;
+                // Calculate total from the dataset data to ensure accurate percentages
+                const datasetTotal = context.dataset.data.reduce((sum, val) => sum + val, 0);
+                const percentage = datasetTotal > 0 ? ((value / datasetTotal) * 100).toFixed(1) : 0;
+                return `${label}: ${value} PR${value !== 1 ? "s" : ""} (${percentage}%)`;
+              },
+            },
+            backgroundColor: "rgba(16, 27, 51, 0.95)",
+            titleColor: "#e2e8f0",
+            bodyColor: "#94a3b8",
+            borderColor: "rgba(148, 163, 184, 0.2)",
+            borderWidth: 1,
+            padding: 12,
           },
         },
       },
@@ -296,6 +374,115 @@
     });
 
     return { labels, values };
+  }
+
+  function renderProcessingTimeChart(filtered) {
+    const ctx = document.getElementById("processing-time-chart");
+    if (!ctx) return;
+
+    if (processingTimeChart) {
+      processingTimeChart.destroy();
+      processingTimeChart = null;
+    }
+
+    // Filter data with processing time
+    const dataWithTime = filtered.filter((item) => item.processing_time_ms != null);
+
+    if (!dataWithTime.length) {
+      elements.processingEmpty.classList.remove("hidden");
+      return;
+    }
+
+    elements.processingEmpty.classList.add("hidden");
+
+    // Define time segments (in milliseconds)
+    const segments = [
+      { label: "< 1s", max: 1000 },
+      { label: "1-5s", min: 1000, max: 5000 },
+      { label: "5-10s", min: 5000, max: 10000 },
+      { label: "10-30s", min: 10000, max: 30000 },
+      { label: "30-60s", min: 30000, max: 60000 },
+      { label: "> 60s", min: 60000 },
+    ];
+
+    // Count PRs in each segment
+    const segmentCounts = segments.map((segment) => {
+      const count = dataWithTime.filter((item) => {
+        const time = item.processing_time_ms;
+        if (segment.min !== undefined && segment.max !== undefined) {
+          return time >= segment.min && time < segment.max;
+        } else if (segment.max !== undefined) {
+          return time < segment.max;
+        } else {
+          return time >= segment.min;
+        }
+      }).length;
+      return { label: segment.label, count };
+    });
+
+    const labels = segmentCounts.map((s) => s.label);
+    const counts = segmentCounts.map((s) => s.count);
+
+    processingTimeChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: "PR Count",
+            data: counts,
+            backgroundColor: "rgba(56, 189, 248, 0.8)",
+            borderRadius: 6,
+          },
+        ],
+      },
+      options: {
+        indexAxis: "y", // Horizontal bar chart
+        maintainAspectRatio: false,
+        responsive: true,
+        plugins: {
+          legend: {
+            display: false,
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const count = context.parsed.x;
+                const total = dataWithTime.length;
+                const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+                return `${count} PR${count !== 1 ? "s" : ""} (${percentage}%)`;
+              },
+            },
+            backgroundColor: "rgba(16, 27, 51, 0.95)",
+            titleColor: "#e2e8f0",
+            bodyColor: "#94a3b8",
+            borderColor: "rgba(148, 163, 184, 0.2)",
+            borderWidth: 1,
+            padding: 12,
+          },
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            ticks: {
+              color: "#94a3b8",
+              precision: 0,
+            },
+            grid: {
+              color: "rgba(148, 163, 184, 0.15)",
+            },
+          },
+          y: {
+            ticks: {
+              color: "#94a3b8",
+            },
+            grid: {
+              display: false,
+            },
+          },
+        },
+      },
+    });
   }
 })();
 

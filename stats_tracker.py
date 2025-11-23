@@ -43,6 +43,7 @@ def log_pr_creation(
     channel_name: Optional[str],
     created_at: Optional[str] = None,
     thread_ts: Optional[str] = None,
+    processing_time_ms: Optional[int] = None,
 ) -> None:
     """
     Persist a PR creation event so the dashboard can build analytics.
@@ -59,6 +60,9 @@ def log_pr_creation(
         "merged_at": None,
         "thread_ts": thread_ts,
     }
+    
+    if processing_time_ms is not None:
+        record["processing_time_ms"] = int(processing_time_ms)
 
     with _LOCK:
         records = _load_records()
