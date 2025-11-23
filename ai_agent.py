@@ -443,16 +443,19 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
         Cache is stored in .cache/vision_responses/ directory.
         
         For multi-turn conversations, each conversation state gets its own cache entry:
-        - Turn 1: cached as SHA256(filename + "user: create page")
-        - Turn 2: cached as SHA256(filename + "user: create page\nassistant: ...\nuser: add button")
-        - Turn 3: cached as SHA256(filename + "user: create page\nassistant: ...\nuser: add button\nassistant: ...\nuser: bigger")
+        - Turn 1: SHA256(image.png + "user: create page")
+        - Turn 2: SHA256(image.png + "user: create page\nassistant: [code]\nuser: add button")
+        - Turn 3: SHA256(image.png + "user: create page\nassistant: [code]\nuser: add button\nassistant: [code]\nuser: bigger")
         
-        This ensures exact conversation paths are cached, avoiding redundant API calls
-        for identical interaction sequences.
+        This ensures:
+        - Each unique conversation path is cached independently
+        - Same image + same conversation sequence = cache HIT
+        - Codebase context changes don't affect cache (excluded from key)
+        - Vision API calls are minimized for repeated conversation flows
         
         Args:
-            prompt: Task description (includes full conversation history for multi-turn)
-            context: Repository context
+            prompt: Task description with full conversation history
+            context: Repository context (NOT included in cache key)
             image_data: Dict with base64 encoded image (must include 'filename' key)
             
         Returns:
@@ -469,24 +472,28 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             cache_dir = Path(".cache/vision_responses")
             cache_dir.mkdir(parents=True, exist_ok=True)
             
-            # Generate cache key from filename + user message ONLY (ignore codebase context)
-            # This ensures cache hits even if codebase context changes slightly
+            # Generate cache key from filename + FULL conversation history (ignore codebase context)
+            # This ensures different conversation paths have different cache entries
             filename = image_data.get('filename', 'unknown')
             
-            # Extract just the user message from the full prompt (before "CONTEXT:" section)
-            # Format is: "Task: user: <message>\n\nContext: ..."
-            user_message = prompt
+            # Extract the full conversation history (before "CONTEXT:" section)
+            # Format is: "Task: user: <msg1>\nassistant: <resp1>\nuser: <msg2>\n\nContext: ..."
+            # We want everything up to the context section
+            conversation_history = prompt
             if '\n\nCONTEXT:' in prompt:
-                user_message = prompt.split('\n\nCONTEXT:')[0]
+                conversation_history = prompt.split('\n\nCONTEXT:')[0]
             elif '\nContext: Repository' in prompt:
-                user_message = prompt.split('\nContext: Repository')[0]
+                conversation_history = prompt.split('\nContext: Repository')[0]
+            elif '\nCONTEXT:' in prompt:
+                conversation_history = prompt.split('\nCONTEXT:')[0]
             
-            # Cache key = filename + user message (not full prompt with context)
-            cache_key_data = f"{filename}::{user_message}"
+            # Cache key = filename + full conversation history (not codebase context)
+            # This means Turn 1, Turn 2, Turn 3 all have different cache keys
+            cache_key_data = f"{filename}::{conversation_history}"
             cache_key = hashlib.sha256(cache_key_data.encode()).hexdigest()
             cache_file = cache_dir / f"{cache_key}.json"
             
-            logger.info(f"🔑 Cache key: {filename} + user_message({len(user_message)} chars) → {cache_key[:16]}...")
+            logger.info(f"🔑 Cache key: {filename} + conversation({len(conversation_history)} chars) → {cache_key[:16]}...")
             
             # Check cache first
             if cache_file.exists():

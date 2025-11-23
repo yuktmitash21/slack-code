@@ -1313,7 +1313,7 @@ def handle_app_mention(event, client, say, logger):
         elif command["command"] == "VIEW_USAGE":
             logger.info(f"🤖 AI detected VIEW_USAGE command")
             say(
-                text=f"<@{user_id}> 📊 *Your Usage Dashboard*\n\nView your activity, stats, and PR history:\n\n🔗 http://localhost:5050\n\n_See all your PRs, merge activity, and bot usage statistics_",
+                text=f"<@{user_id}> 📊 *Your Usage Dashboard*\n\nView your activity, stats, and PR history:\n\n🔗 https://100286ffba51.ngrok-free.app/dashboard\n\n_See all your PRs, merge activity, and bot usage statistics_",
                 thread_ts=thread_ts
             )
             return
