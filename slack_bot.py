@@ -1310,6 +1310,14 @@ def handle_app_mention(event, client, say, logger):
             handle_pr_unmerge(user_id, pr_number, say, thread_ts)
             return
         
+        elif command["command"] == "VIEW_USAGE":
+            logger.info(f"🤖 AI detected VIEW_USAGE command")
+            say(
+                text=f"<@{user_id}> 📊 *Your Usage Dashboard*\n\nView your activity, stats, and PR history:\n\n🔗 http://localhost:5050\n\n_See all your PRs, merge activity, and bot usage statistics_",
+                thread_ts=thread_ts
+            )
+            return
+        
         # GENERAL command - answer the question intelligently
         logger.info(f"🤖 Handling GENERAL command: {message_text}")
         
@@ -1342,6 +1350,10 @@ def handle_app_mention(event, client, say, logger):
 4. **Unmerge PRs** - Revert merged pull requests
    - Say: "revert PR 123" or "unmerge PR 45"
 
+5. **View Usage** - See your activity and statistics
+   - Say: "show my usage" or "dashboard"
+   - I'll send you a link to your personal dashboard
+
 I understand natural language and use AI for everything!"""
 
             response_ai = client_openai.chat.completions.create(
@@ -1356,9 +1368,9 @@ I understand natural language and use AI for everything!"""
 IMPORTANT: Always include a brief mention of your capabilities in your response, even for casual questions like "how are you" or "hello". 
 
 For example:
-- "How are you?" → "I'm doing great! I'm here to help you write code and manage PRs. I can create PRs, merge them, or revert them. What can I help you build today?"
-- "Hello" → "Hey there! 👋 I'm a bot that writes code for you and manages GitHub PRs. Need help creating something?"
-- "What's up?" → "Not much! Ready to help you with code. I can create PRs, merge them, and even revert changes. What are you working on?"
+- "How are you?" → "I'm doing great! I'm here to help you write code and manage PRs. I can create PRs, merge them, revert them, and show you your usage stats. What can I help you build today?"
+- "Hello" → "Hey there! 👋 I'm a bot that writes code for you and manages GitHub PRs. Need help creating something? Or want to see your dashboard?"
+- "What's up?" → "Not much! Ready to help you with code. I can create PRs, merge them, revert changes, or show you your activity. What are you working on?"
 
 Always be conversational but make sure to highlight what you can do. Use Slack markdown formatting."""
                     },

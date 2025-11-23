@@ -163,13 +163,17 @@ Classify user commands into these categories and extract parameters:
    Examples: "revert PR 123", "unmerge #45", "revert 12"
    Extract: pr_number (just the number)
 
-5. GENERAL - General question or conversation (NOT a coding task)
+5. VIEW_USAGE - User wants to view their usage statistics or dashboard
+   Examples: "show my usage", "view stats", "dashboard", "my activity", "usage report"
+   No parameters needed
+
+6. GENERAL - General question or conversation (NOT a coding task)
    Examples: "what can you do?", "help", "hello", "how are you"
    No parameters needed
 
 Respond with ONLY valid JSON in this format:
 {
-    "command": "CREATE_PR" | "MERGE_PR" | "REVERT_PR" | "REFINE" | "GENERAL",
+    "command": "CREATE_PR" | "MERGE_PR" | "REVERT_PR" | "VIEW_USAGE" | "REFINE" | "GENERAL",
     "task_description": "extracted description" (only for CREATE_PR),
     "pr_number": "123" (only for MERGE_PR or REVERT_PR, number as string),
     "merge_method": "merge" | "squash" | "rebase" (only for MERGE_PR, default "merge")
@@ -183,6 +187,8 @@ Examples:
 "merge PR 123" → {"command": "MERGE_PR", "pr_number": "123", "merge_method": "merge"}
 "merge #45 with squash" → {"command": "MERGE_PR", "pr_number": "45", "merge_method": "squash"}
 "revert PR 12" → {"command": "REVERT_PR", "pr_number": "12"}
+"show my usage" → {"command": "VIEW_USAGE"}
+"dashboard" → {"command": "VIEW_USAGE"}
 "what can you do?" → {"command": "GENERAL"}
 "hello" → {"command": "GENERAL"}"""
                 },
@@ -273,6 +279,22 @@ def classify_command_with_regex(message_text: str) -> Dict:
                 "command": "CREATE_PR",
                 "task_description": task_description or "No specific task description provided"
             }
+    
+    # Check for VIEW_USAGE
+    usage_keywords = [
+        r'\busage\b',
+        r'\bstats\b',
+        r'\bstatistics\b',
+        r'\bdashboard\b',
+        r'\bactivity\b',
+        r'\bmy\s+usage\b',
+        r'\bshow\s+usage\b',
+        r'\bview\s+stats\b',
+    ]
+    for pattern in usage_keywords:
+        if re.search(pattern, clean_text, re.IGNORECASE):
+            logger.info(f"🔁 Fallback: VIEW_USAGE detected")
+            return {"command": "VIEW_USAGE"}
     
     # Default to GENERAL
     logger.info(f"🔁 Fallback: GENERAL command")
