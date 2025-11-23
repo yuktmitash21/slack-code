@@ -7,3 +7,9 @@ gitpython>=3.1.40
 # AI Code Generation
 openai>=1.0.0
 
+# Optional: Anthropic for Claude Vision
+anthropic>=0.18.0
+
+# Image Processing (for Vision API)
+requests>=2.31.0
+Pillow>=10.0.0

@@ -36,7 +36,8 @@ class AICodeGenerator:
         logger.info(f"✅ AI Code Generator initialized with {model_name}")
     
     async def generate_code_for_task(self, task_description: str, 
-                                     context: Optional[str] = None) -> Dict:
+                                     context: Optional[str] = None,
+                                     image_data: Optional[Dict] = None) -> Dict:
         """
         Generate code based on task description using direct OpenAI API
         
@@ -96,6 +97,15 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
 
             logger.info("Generating code with direct OpenAI API...")
             
+            # If image is provided, use vision API for wireframe analysis
+            if image_data and self.llm_provider == "openai":
+                logger.info("Using OpenAI Vision API for wireframe analysis...")
+                return await self._generate_with_vision_openai(task_description, context, image_data)
+            elif image_data and self.llm_provider == "anthropic":
+                logger.info("Using Anthropic Claude Vision for wireframe analysis...")
+                return await self._generate_with_vision_anthropic(task_description, context, image_data)
+            
+            # Use text-based generation
             client = openai.OpenAI()
             response = client.chat.completions.create(
                 model=self.model_name,
@@ -364,14 +374,181 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
         logger.info(f"Final file count after deduplication: {len(unique_files)}")
         return unique_files
     
+    async def _generate_with_vision_openai(self, prompt: str, context: str, image_data: Dict) -> Dict:
+        """
+        Generate code using OpenAI Vision API with enhanced wireframe matching prompts
+        
+        Args:
+            prompt: Task description
+            context: Repository context
+            image_data: Dict with base64 encoded image
+            
+        Returns:
+            dict with generated code files
+        """
+        try:
+            import openai
+            import base64 as b64
+            
+            client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            
+            # Validate and normalize image format
+            raw_format = str(image_data.get('format', 'png')).lower().strip()
+            format_map = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png', 'gif': 'gif', 'webp': 'webp'}
+            image_format = format_map.get(raw_format, 'png')
+            
+            base64_data = image_data['data']
+            if not base64_data:
+                raise ValueError("Invalid base64 data")
+            
+            # Validate base64
+            try:
+                b64.b64decode(base64_data[:100], validate=True)
+            except:
+                raise ValueError("Invalid base64 encoding")
+            
+            data_uri = f"data:image/{image_format};base64,{base64_data}"
+            
+            # ENHANCED SYSTEM PROMPT for pixel-perfect wireframe matching
+            system_prompt = """You are an expert UI/UX developer specializing in converting wireframes and designs to pixel-perfect HTML/CSS/JavaScript code.
+
+CRITICAL REQUIREMENTS FOR WIREFRAME MATCHING:
+
+1. PIXEL-PERFECT ACCURACY:
+   - Match EXACT layout, spacing, and positioning from the wireframe
+   - Measure and replicate exact distances between elements
+   - Preserve the visual hierarchy exactly as shown
+   - Match component sizes precisely
+
+2. COLOR EXTRACTION:
+   - Extract EXACT colors from the wireframe image
+   - Use hex codes or RGB values that match the design
+   - Preserve color gradients, shadows, and effects
+   - Match background colors, text colors, and accent colors precisely
+
+3. TYPOGRAPHY:
+   - Match font families, sizes, weights, and styles exactly
+   - Preserve text alignment (left, center, right, justify)
+   - Match line heights and letter spacing
+   - Replicate text colors and effects
+
+4. LAYOUT STRUCTURE:
+   - Use the exact layout method shown (Flexbox, Grid, or absolute positioning)
+   - Match padding, margins, and gaps precisely
+   - Preserve responsive breakpoints if visible
+   - Match container widths and heights
+
+5. COMPONENTS:
+   - Identify ALL UI components (buttons, inputs, cards, nav, etc.)
+   - Match component styles, borders, shadows, and effects
+   - Preserve hover states and interactions if shown
+   - Match icons, images, and media elements
+
+6. RESPONSIVE DESIGN:
+   - Maintain the wireframe's responsive behavior
+   - Use appropriate breakpoints
+   - Ensure mobile-first or desktop-first as shown
+
+OUTPUT FORMAT (MANDATORY):
+File: path/to/filename.html
+```html
+[complete HTML code matching wireframe exactly]
+```
+
+File: path/to/filename.css
+```css
+[complete CSS code with exact colors, spacing, typography from wireframe]
+```
+
+File: path/to/filename.js
+```javascript
+[complete JavaScript code for any interactivity shown in wireframe]
+```
+
+DO NOT:
+- Create generic designs - match the wireframe EXACTLY
+- Use placeholder colors - extract real colors from the image
+- Approximate spacing - measure and match precisely
+- Skip components - include everything visible in the wireframe
+- Add features not shown - only implement what's visible"""
+            
+            user_prompt = f"""WIREFRAME/SCREENSHOT ANALYSIS REQUIRED
+
+Analyze the attached wireframe/screenshot image with EXTREME ATTENTION TO DETAIL.
+
+TASK: {prompt}
+
+CONTEXT: {context if context else 'No additional context'}
+
+ANALYSIS INSTRUCTIONS:
+1. Study the image carefully - examine every pixel, color, spacing, and component
+2. Extract exact colors using color picker analysis (provide hex codes)
+3. Measure spacing between elements (padding, margins, gaps)
+4. Identify all typography details (font families, sizes, weights)
+5. List all UI components and their exact styles
+6. Note layout structure (Flexbox, Grid, positioning)
+7. Identify any interactive elements or states shown
+
+GENERATE CODE THAT:
+- Matches the wireframe pixel-perfectly
+- Uses exact colors extracted from the image
+- Preserves exact spacing and layout
+- Includes all components visible in the wireframe
+- Maintains responsive behavior
+- Implements any interactivity shown
+
+Generate the code NOW in the required format."""
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                        {"type": "text", "text": user_prompt}
+                    ]
+                }
+            ]
+            
+            logger.info(f"Calling OpenAI Vision API with {self.model_name} for wireframe analysis...")
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=4096,
+                temperature=0.1  # Very low temperature for accuracy
+            )
+            
+            response_text = response.choices[0].message.content
+            logger.info(f"Vision API response length: {len(response_text)} chars")
+            
+            files = self._parse_agent_response(response_text)
+            
+            return {
+                "success": True,
+                "files": files,
+                "raw_response": response_text
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in OpenAI Vision API: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "success": False,
+                "error": str(e),
+                "files": []
+            }
+    
     def generate_code_sync(self, task_description: str, 
-                          context: Optional[str] = None) -> Dict:
+                          context: Optional[str] = None,
+                          image_data: Optional[Dict] = None) -> Dict:
         """
         Synchronous wrapper for generate_code_for_task
         
         Args:
             task_description: Description of the coding task
             context: Optional context about the repository/project
+            image_data: Optional dict with base64 encoded image for vision models
             
         Returns:
             dict with generated code files and descriptions
@@ -383,7 +560,7 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             asyncio.set_event_loop(loop)
         
         return loop.run_until_complete(
-            self.generate_code_for_task(task_description, context)
+            self.generate_code_for_task(task_description, context, image_data)
         )
 
 

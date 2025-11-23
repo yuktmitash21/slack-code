@@ -34,7 +34,7 @@ app = App(
 pr_conversations = {}
 
 
-def _generate_changeset_preview(prompt: str, context: str, github_helper) -> dict:
+def _generate_changeset_preview(prompt: str, context: str, github_helper, image_data=None) -> dict:
     """
     Generate a changeset preview using direct OpenAI API
     This shows proposed changes to the user before PR creation
@@ -64,7 +64,8 @@ The user can refine these changes through conversation before creating the PR.
         # Generate code using SpoonOS (same as PR creation)
         result = github_helper.ai_generator.generate_code_sync(
             task_description=full_prompt,
-            context=context
+            context=context,
+            image_data=image_data  # Pass image for vision API
         )
         
         if not result.get("success"):
@@ -350,7 +351,133 @@ def is_ai_asking_question(response_text):
     return any(indicator in text_lower for indicator in question_indicators)
 
 
-def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, channel_id=None, is_initial=False):
+def extract_image_from_message(event, client, logger):
+    """Extract image URL and file info from Slack message event"""
+    try:
+        files = event.get("files", [])
+        for file in files:
+            if file.get("mimetype", "").startswith("image/"):
+                image_url = file.get("url_private")
+                if image_url:
+                    logger.info(f"Found image: {file.get('name')} ({file.get('mimetype')})")
+                    return image_url, file
+        return None, None
+    except Exception as e:
+        logger.error(f"Error extracting image: {e}")
+        return None, None
+
+
+def download_slack_image(image_url, client, file_info=None):
+    """Download image from Slack, validate format, and encode to base64"""
+    try:
+        import requests
+        import base64
+        import re
+        import imghdr
+        from io import BytesIO
+        try:
+            from PIL import Image
+        except ImportError:
+            Image = None
+        
+        supported_formats = {"png", "jpeg", "gif", "webp"}
+        format_map = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png', 'gif': 'gif', 'webp': 'webp'}
+        
+        bot_token = os.environ.get("SLACK_BOT_TOKEN")
+        headers = {"Authorization": f"Bearer {bot_token}"}
+        
+        response = requests.get(image_url, headers=headers)
+        response.raise_for_status()
+        
+        raw_bytes = response.content
+        logger.info(f"Downloaded image bytes: {len(raw_bytes)} bytes")
+        
+        # Candidate formats from multiple sources
+        candidate_formats = []
+        
+        # Detect via magic bytes
+        try:
+            detected_format = imghdr.what(None, raw_bytes)
+            if detected_format:
+                logger.info(f"Detected format from magic bytes: {detected_format}")
+                candidate_formats.append(detected_format)
+        except Exception as e:
+            logger.warning(f"Could not detect format from magic bytes: {e}")
+        
+        # Content-Type header
+        content_type = response.headers.get('Content-Type', '')
+        if content_type:
+            content_part = content_type.split(';')[0].strip().lower()
+            if content_part.startswith('image/'):
+                candidate_formats.append(content_part[6:].strip())
+            else:
+                candidate_formats.append(content_part.split('/')[-1].strip())
+        
+        # File info from Slack event
+        if file_info:
+            mimetype = file_info.get('mimetype', '')
+            if mimetype:
+                mimetype = mimetype.lower().strip()
+                if mimetype.startswith('image/'):
+                    candidate_formats.append(mimetype[6:].strip())
+                else:
+                    candidate_formats.append(mimetype.split('/')[-1].strip())
+        
+        # URL extension
+        url_match = re.search(r'\.(png|jpg|jpeg|gif|webp)$', image_url.lower())
+        if url_match:
+            candidate_formats.append(url_match.group(1))
+        
+        normalized_format = None
+        for candidate in candidate_formats:
+            if not candidate:
+                continue
+            normalized = format_map.get(candidate.lower(), candidate.lower())
+            if normalized:
+                normalized_format = normalized
+                break
+        
+        if not normalized_format:
+            normalized_format = 'png'
+        
+        logger.info(f"Initial normalized format: {normalized_format}")
+        
+        # Convert unsupported formats to PNG using Pillow
+        if normalized_format not in supported_formats:
+            if Image is None:
+                logger.error("Pillow not installed. Cannot convert unsupported image format.")
+                return None
+            try:
+                image = Image.open(BytesIO(raw_bytes))
+                if image.mode in ("P", "RGBA", "LA"):
+                    image = image.convert("RGBA")
+                else:
+                    image = image.convert("RGB")
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                raw_bytes = buffer.getvalue()
+                normalized_format = "png"
+                logger.info("Converted unsupported image format to PNG using Pillow")
+            except Exception as convert_error:
+                logger.error(f"Failed to convert image to PNG: {convert_error}")
+                return None
+        
+        image_data = base64.b64encode(raw_bytes).decode('utf-8')
+        logger.info(f"Final image format: {normalized_format}, base64 length: {len(image_data)} chars")
+        
+        return {
+            "data": image_data,
+            "format": normalized_format,
+            "url": image_url
+        }
+    except Exception as e:
+        logger.error(f"Error downloading image: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+
+def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, channel_id=None, is_initial=False, image_data=None):
     """
     Handle conversational PR planning - discuss requirements before creating PR
     
@@ -422,8 +549,13 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
             "channel_id": channel_id,
             "plan": None,
             "codebase_context": None,  # Will be fetched once and cached
-            "cached_files": []  # Parsed files from preview (for PR creation)
+            "cached_files": [],  # Parsed files from preview (for PR creation)
+            "image_data": image_data  # Store image for vision API
         }
+    elif image_data:
+        # Update image data if provided in follow-up message
+        pr_conversations[conversation_key]["image_data"] = image_data
+        logger.info("📸 Updated image data in conversation")
     
     # Always use the stored user_id to tag
     stored_user_id = pr_conversations[conversation_key]["user_id"]
@@ -556,12 +688,14 @@ Rules:
         
         # Use the cached full codebase context for preview
         full_codebase_context = pr_conversations[conversation_key]["codebase_context"]
+        stored_image_data = pr_conversations[conversation_key].get("image_data")
         
-        # Generate changeset preview using SpoonOS
+        # Generate changeset preview using SpoonOS with vision if image is available
         ai_result = _generate_changeset_preview(
             prompt=planning_prompt,
             context=full_codebase_context,
-            github_helper=github_helper
+            github_helper=github_helper,
+            image_data=stored_image_data  # Pass image for vision API
         )
         
         if not ai_result.get("success"):
@@ -858,6 +992,22 @@ def handle_app_mention(event, client, say, logger):
         
         logger.info(f"Bot mentioned by user {user_id} in channel {channel_id}")
         
+        # Check for attached images (wireframes, screenshots, etc.)
+        image_url, file_info = extract_image_from_message(event, client, logger)
+        image_data = None
+        
+        if image_url:
+            logger.info(f"📸 Image detected! Downloading from Slack...")
+            image_data = download_slack_image(image_url, client, file_info=file_info)
+            if image_data:
+                logger.info(f"✅ Image downloaded successfully: {image_data['format']}")
+                message_text += f"\n\n[WIREFRAME IMAGE ATTACHED]"
+            else:
+                say(
+                    text=f"<@{user_id}> ⚠️ I see you attached an image, but I couldn't download it. Please check permissions.",
+                    thread_ts=thread_ts
+                )
+        
         # Get user info
         user_info = client.users_info(user=user_id)
         username = user_info["user"]["real_name"] or user_info["user"]["name"]
@@ -865,7 +1015,7 @@ def handle_app_mention(event, client, say, logger):
         # Check if this is a continuation of a PR conversation first
         if thread_ts in pr_conversations:
             logger.info(f"Continuing PR conversation in thread {thread_ts}")
-            handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False)
+            handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False, image_data=image_data)
             return
         
         # Use AI-powered command classification
@@ -874,7 +1024,7 @@ def handle_app_mention(event, client, say, logger):
         if command["command"] == "CREATE_PR":
             task_description = command.get("task_description", "No specific task description provided")
             logger.info(f"🤖 AI detected CREATE_PR command: {task_description}")
-            handle_pr_conversation(user_id, task_description, say, thread_ts, client, channel_id, is_initial=True)
+            handle_pr_conversation(user_id, task_description, say, thread_ts, client, channel_id, is_initial=True, image_data=image_data)
             return
         
         elif command["command"] == "MERGE_PR":
