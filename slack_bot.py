@@ -11,6 +11,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
 from github_helper import GitHubPRHelper
+from intent_classification import is_ready_to_create_pr
 
 # Load environment variables
 load_dotenv()
@@ -31,33 +32,6 @@ app = App(
 # Store ongoing conversations for PR creation
 # Format: {thread_ts: conversation_data}
 pr_conversations = {}
-
-def is_ready_to_create_pr(message_text):
-    """
-    Detect if user wants to create the PR now
-    
-    Args:
-        message_text: User's message
-        
-    Returns:
-        bool: True if user wants to create PR
-    """
-    create_pr_phrases = [
-        "make pr",
-        "create pr",
-        "make the pr",
-        "create the pr",
-        "go ahead",
-        "proceed",
-        "looks good",
-        "sounds good",
-        "let's do it",
-        "do it",
-        "create it"
-    ]
-    
-    text_lower = message_text.lower()
-    return any(phrase in text_lower for phrase in create_pr_phrases)
 
 
 def _generate_changeset_preview(prompt: str, context: str, github_helper) -> dict:
@@ -490,6 +464,18 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
         channel_id: Channel ID
         is_initial: True if this is the initial "create PR" command
     """
+    logger.info("=" * 80)
+    logger.info("💬 HANDLE_PR_CONVERSATION FUNCTION ENTERED")
+    logger.info("=" * 80)
+    logger.info(f"   User ID: {user_id}")
+    logger.info(f"   Message Text: {message_text}")
+    logger.info(f"   Thread TS: {thread_ts}")
+    logger.info(f"   Channel ID: {channel_id}")
+    logger.info(f"   Is Initial: {is_initial}")
+    logger.info(f"   GitHub Helper Available: {github_helper is not None}")
+    logger.info(f"   Current Conversations: {list(pr_conversations.keys())}")
+    logger.info("=" * 80)
+    
     if not github_helper:
         say(
             text=f"Sorry <@{user_id}>, GitHub integration is not configured.",
@@ -584,7 +570,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
     # Send initial message for new conversations
     if is_initial:
         say(
-            text=f"<@{stored_user_id}> 🤖 I'll propose code changes for: *{message_text}*\n\n📚 Reading codebase...",
+            text=f"<@{stored_user_id}> 🤖 I'll propose code changes for: *{message_text}*\n\n📚 Reading codebase...\n\n💡 _Tip: I'll show you a changeset. Reply to refine it (\"add tests\", \"use one file\", etc), or say **'make pr'** / click the button when ready to submit!_",
             thread_ts=thread_ts
         )
     
@@ -608,7 +594,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
         if pr_conversations[conversation_key]["codebase_context"] is None:
             logger.info("Fetching full codebase context for conversation preview...")
             say(
-                text=f"<@{stored_user_id}> 📚 Analyzing codebase...",
+                text=f"<@{stored_user_id}> 📚 Analyzing codebase with Spoon AI...",
                 thread_ts=thread_ts
             )
             try:
@@ -773,12 +759,22 @@ Rules:
         ])
         
         logger.info(f"Sending response with {len(message_chunks)} message chunk(s)")
+        logger.info("=" * 80)
+        logger.info("💬 ABOUT TO SEND SLACK MESSAGE")
+        logger.info("=" * 80)
+        logger.info(f"   User to tag: {stored_user_id}")
+        logger.info(f"   Thread TS: {thread_ts}")
+        logger.info(f"   Number of blocks: {len(blocks)}")
+        logger.info(f"   Number of chunks: {len(message_chunks)}")
+        logger.info("=" * 80)
         
         say(
             text=f"<@{stored_user_id}> Proposed changeset ready! (see blocks for details)",
             blocks=blocks,
             thread_ts=thread_ts
         )
+        
+        logger.info("✅ Slack message sent successfully!")
         
     except Exception as e:
         logger.error(f"Error in PR conversation: {e}")
@@ -1176,30 +1172,49 @@ def handle_message_events(event, say, client, logger):
     """
     Handle message events - check if it's a reply in an active PR conversation thread
     """
-    logger.info(f"📨 Message event received: {event}")
+    logger.info("=" * 80)
+    logger.info("🔔 MESSAGE EVENT HANDLER TRIGGERED")
+    logger.info("=" * 80)
+    logger.info(f"📨 Full event data: {event}")
+    logger.info(f"   Channel: {event.get('channel')}")
+    logger.info(f"   Channel Type: {event.get('channel_type')}")
     logger.info(f"   User: {event.get('user')}")
-    logger.info(f"   Text: {event.get('text', '')[:100]}")
-    logger.info(f"   Thread: {event.get('thread_ts')}")
+    logger.info(f"   Text: {event.get('text', '')}")
+    logger.info(f"   Message TS: {event.get('ts')}")
+    logger.info(f"   Thread TS: {event.get('thread_ts')}")
+    logger.info(f"   Parent User ID: {event.get('parent_user_id')}")
     logger.info(f"   Subtype: {event.get('subtype')}")
     logger.info(f"   Bot ID: {event.get('bot_id')}")
-    logger.info(f"   Active conversations: {list(pr_conversations.keys())}")
+    logger.info(f"   Bot Profile: {event.get('bot_profile')}")
+    logger.info(f"   Event Type: {event.get('type')}")
+    logger.info(f"   Event Subtype: {event.get('event_subtype')}")
+    logger.info(f"   📚 Active conversations: {list(pr_conversations.keys())}")
+    logger.info("=" * 80)
     
     # Ignore bot messages
     if event.get("subtype") == "bot_message" or event.get("bot_id"):
-        logger.info("   ⏭️  Ignoring: bot message")
+        logger.warning("⏭️  IGNORING: This is a bot message")
         return
     
     # Check if this is in a thread with an active conversation
     thread_ts = event.get("thread_ts")
     
     if not thread_ts:
-        logger.info("   ⏭️  Ignoring: not in a thread")
+        logger.warning("⏭️  IGNORING: Not in a thread (thread_ts is None)")
+        logger.info(f"   This appears to be a top-level message (ts={event.get('ts')})")
         return
+    
+    logger.info(f"✅ This IS a thread reply! Thread TS: {thread_ts}")
     
     # Check if this thread has an active PR conversation
     if thread_ts not in pr_conversations:
-        logger.info(f"   ⏭️  Ignoring: thread {thread_ts} not in active conversations")
+        logger.warning(f"⏭️  IGNORING: Thread {thread_ts} is NOT in active conversations")
+        logger.info(f"   Available conversation threads: {list(pr_conversations.keys())}")
+        logger.info(f"   Thread exists but not tracked - this is a reply to some other thread")
         return
+    
+    logger.info("🎯 MATCH! This is a reply in an ACTIVE PR conversation!")
+    logger.info(f"   Conversation data: {pr_conversations[thread_ts]}")
     
     # This is a reply in an active PR conversation!
     user_id = event.get("user")
@@ -1207,9 +1222,24 @@ def handle_message_events(event, say, client, logger):
     channel_id = event.get("channel")
     
     logger.info(f"   ✅ Processing message in PR conversation thread!")
+    logger.info("=" * 80)
+    logger.info("🚀 CALLING handle_pr_conversation")
+    logger.info("=" * 80)
+    logger.info(f"   User ID: {user_id}")
+    logger.info(f"   Message: {message_text}")
+    logger.info(f"   Thread TS: {thread_ts}")
+    logger.info(f"   Channel: {channel_id}")
+    logger.info(f"   Is Initial: False (this is a follow-up)")
+    logger.info("=" * 80)
     
     # Handle the conversation
-    handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False)
+    try:
+        handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False)
+        logger.info("✅ handle_pr_conversation completed successfully")
+    except Exception as e:
+        logger.error(f"❌ handle_pr_conversation failed with error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 # Start the app
