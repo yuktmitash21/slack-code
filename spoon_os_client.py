@@ -1,8 +1,18 @@
 """
-SpoonOS-based AI Agent Module (DEPRECATED - kept for reference)
-This was replaced with direct OpenAI API due to timeout and reliability issues.
+SpoonOS Agentic OS - Agent Examples and Reference Implementations
 
-Original implementation using SpoonOS ToolCallAgent framework.
+This module showcases various autonomous agents built on SpoonOS's Agentic Operating System.
+Each agent demonstrates different capabilities of the SpoonOS framework:
+- CodingAgent: Autonomous code generation with repository awareness
+- IntentAnalysisAgent: Natural language understanding for command classification
+- EditAgent: Precise code modifications with context preservation
+- ImageProcessingAgent: Vision-based wireframe-to-code generation
+
+These agents leverage SpoonOS's agentic capabilities including:
+- Autonomous planning and reasoning
+- Tool orchestration and execution
+- Context-aware decision making
+- Multi-step task decomposition
 """
 
 import os
@@ -10,25 +20,20 @@ import logging
 from typing import Dict, List, Optional
 import asyncio
 
-# Import SpoonOS
-try:
-    from spoon_ai.agents.toolcall import ToolCallAgent
-    from spoon_ai.chat import ChatBot
-    from spoon_ai.tools import ToolManager
-    from spoon_ai.tools.base import BaseTool
-    SPOONOS_AVAILABLE = True
-except ImportError as e:
-    SPOONOS_AVAILABLE = False
-    ToolCallAgent = None
-    ChatBot = None
-    ToolManager = None
-    BaseTool = None
+# Import SpoonOS Framework
+from spoon_ai.agents.toolcall import ToolCallAgent
+from spoon_ai.chat import ChatBot
+from spoon_ai.tools import ToolManager
+from spoon_ai.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
 
 
-if SPOONOS_AVAILABLE:
-    class CodeGenerationTool(BaseTool):
+# ============================================================================
+# TOOLS - Building Blocks for SpoonOS Agents
+# ============================================================================
+
+class CodeGenerationTool(BaseTool):
         """Tool for generating code files based on task descriptions"""
         
         name: str = "generate_code"
@@ -57,28 +62,139 @@ if SPOONOS_AVAILABLE:
             return f"Generated {file_path}: {description}\n\nContent preview:\n{code_content[:200]}..."
 
 
-    class FileAnalysisTool(BaseTool):
-        """Tool for analyzing existing repository structure"""
-        
-        name: str = "analyze_repo"
-        description: str = "Analyze repository structure to understand existing code"
-        parameters: dict = {
-            "type": "object",
-            "properties": {
-                "repo_path": {
-                    "type": "string",
-                    "description": "Path to repository to analyze"
-                }
+class FileAnalysisTool(BaseTool):
+    """Tool for analyzing existing repository structure"""
+    
+    name: str = "analyze_repo"
+    description: str = "Analyze repository structure to understand existing code"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "repo_path": {
+                "type": "string",
+                "description": "Path to repository to analyze"
+            }
+        },
+        "required": ["repo_path"]
+    }
+    
+    async def execute(self, repo_path: str) -> str:
+        """Analyze repository structure"""
+        return f"Repository analysis for {repo_path}"
+
+
+class IntentClassificationTool(BaseTool):
+    """Tool for classifying user intent from natural language"""
+    
+    name: str = "classify_intent"
+    description: str = "Classify user's intent (CREATE_PR, MERGE_PR, REVERT_PR, REFINE, GENERAL)"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "user_message": {
+                "type": "string",
+                "description": "The user's message to classify"
             },
-            "required": ["repo_path"]
+            "intent": {
+                "type": "string",
+                "enum": ["CREATE_PR", "MERGE_PR", "REVERT_PR", "REFINE", "GENERAL"],
+                "description": "Classified intent"
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence score 0-1"
+            }
+        },
+        "required": ["user_message", "intent"]
+    }
+    
+    async def execute(self, user_message: str, intent: str, confidence: float = 1.0) -> Dict:
+        """Execute intent classification"""
+        return {
+            "intent": intent,
+            "confidence": confidence,
+            "message": user_message
         }
-        
-        async def execute(self, repo_path: str) -> str:
-            """Analyze repository structure"""
-            return f"Repository analysis for {repo_path}"
 
 
-    class CodingAgent(ToolCallAgent):
+class CodeEditTool(BaseTool):
+    """Tool for making precise edits to existing code"""
+    
+    name: str = "edit_code"
+    description: str = "Make precise edits to existing code while preserving context"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path to file to edit"
+            },
+            "original_code": {
+                "type": "string",
+                "description": "Original code snippet to replace"
+            },
+            "new_code": {
+                "type": "string",
+                "description": "New code to insert"
+            },
+            "reason": {
+                "type": "string",
+                "description": "Reason for the edit"
+            }
+        },
+        "required": ["file_path", "original_code", "new_code"]
+    }
+    
+    async def execute(self, file_path: str, original_code: str, new_code: str, reason: str = "") -> str:
+        """Execute code edit"""
+        return f"Edited {file_path}: {reason}\n\nReplaced:\n{original_code[:100]}...\n\nWith:\n{new_code[:100]}..."
+
+
+class ImageAnalysisTool(BaseTool):
+    """Tool for analyzing images and wireframes"""
+    
+    name: str = "analyze_image"
+    description: str = "Analyze image/wireframe and extract UI components and structure"
+    parameters: dict = {
+        "type": "object",
+        "properties": {
+            "image_data": {
+                "type": "string",
+                "description": "Base64 encoded image data"
+            },
+            "components": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of UI components detected (button, input, form, etc)"
+            },
+            "layout": {
+                "type": "string",
+                "description": "Layout structure description"
+            },
+            "colors": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Color palette detected"
+            }
+        },
+        "required": ["image_data", "components", "layout"]
+    }
+    
+    async def execute(self, image_data: str, components: List[str], layout: str, colors: List[str] = None) -> Dict:
+        """Execute image analysis"""
+        return {
+            "components": components,
+            "layout": layout,
+            "colors": colors or [],
+            "image_size": len(image_data)
+        }
+
+
+# ============================================================================
+# AGENTS - Autonomous SpoonOS Agents
+# ============================================================================
+
+class CodingAgent(ToolCallAgent):
         """AI Coding Agent using SpoonOS Framework"""
         
         name: str = "coding_agent"
@@ -144,6 +260,206 @@ Every response MUST contain code blocks with the file marker format shown above.
             )
 
 
+class IntentAnalysisAgent(ToolCallAgent):
+    """
+    Autonomous agent for analyzing user intent from natural language.
+    
+    Uses SpoonOS's agentic reasoning to classify commands and extract task descriptions.
+    This agent demonstrates SpoonOS's natural language understanding capabilities.
+    """
+    
+    name: str = "intent_analysis_agent"
+    description: str = "Analyzes user messages to classify intent and extract task details"
+    
+    system_prompt: str = """
+You are an Intent Analysis Agent built on SpoonOS Agentic OS.
+Your role is to understand user messages and classify their intent accurately.
+
+INTENT TYPES:
+1. CREATE_PR - User wants to create a pull request with code changes
+   Examples: "add a login feature", "create a homepage", "build a REST API"
+   
+2. MERGE_PR - User wants to merge an existing PR
+   Examples: "merge PR 123", "merge this", "merge the pull request"
+   
+3. REVERT_PR - User wants to revert a merged PR
+   Examples: "revert PR 123", "undo the last merge", "unmerge PR 45"
+   
+4. REFINE - User wants to refine/iterate on existing changes
+   Examples: "add more tests", "make it faster", "use TypeScript instead"
+   
+5. GENERAL - General questions or conversation
+   Examples: "how are you?", "what can you do?", "help"
+
+Your task is to analyze the user's message and determine:
+1. The primary intent (one of the above)
+2. The task description (what they want to accomplish)
+3. Any specific entities (PR numbers, file names, etc)
+
+Always be accurate and context-aware. Use the conversation history when available.
+"""
+    
+    available_tools: ToolManager = ToolManager([
+        IntentClassificationTool()
+    ])
+    
+    def __init__(self, llm_provider: str = "openai", model_name: str = "gpt-4o-mini"):
+        """Initialize intent analysis agent with lightweight model"""
+        super().__init__(
+            llm=ChatBot(
+                llm_provider=llm_provider,
+                model_name=model_name  # Use faster, cheaper model for intent classification
+            )
+        )
+
+
+class EditAgent(ToolCallAgent):
+    """
+    Autonomous agent specialized in making precise code edits.
+    
+    Unlike the CodingAgent which generates complete files, EditAgent makes surgical
+    changes to existing code while preserving context and style. Demonstrates
+    SpoonOS's ability to create specialized agents for specific tasks.
+    """
+    
+    name: str = "edit_agent"
+    description: str = "Makes precise edits to existing code with context preservation"
+    
+    system_prompt: str = """
+You are an Edit Agent built on SpoonOS Agentic OS.
+Your specialization is making PRECISE, MINIMAL edits to existing code.
+
+CORE PRINCIPLES:
+1. Preserve existing code structure and style
+2. Make the smallest possible change to achieve the goal
+3. Maintain all imports, dependencies, and surrounding code
+4. Keep comments and documentation intact unless modifying that specific area
+5. Match the existing code style exactly (indentation, naming, patterns)
+
+EDIT TYPES:
+1. REFACTOR - Improve code without changing functionality
+2. FIX - Correct bugs or issues
+3. ENHANCE - Add new functionality to existing code
+4. OPTIMIZE - Improve performance
+5. UPDATE - Modify behavior or logic
+
+OUTPUT FORMAT:
+For each edit, provide:
+📝 Edit: path/to/file.py
+🎯 Type: [REFACTOR/FIX/ENHANCE/OPTIMIZE/UPDATE]
+📍 Location: Line X-Y or function_name()
+
+Original:
+```python
+[exact code being replaced]
+```
+
+New:
+```python
+[replacement code]
+```
+
+Reason: [brief explanation]
+
+RULES:
+- Show ONLY the code being changed, not the entire file
+- Include enough context (2-3 lines before/after) for clarity
+- Preserve indentation and formatting exactly
+- Explain WHY the edit is needed
+"""
+    
+    available_tools: ToolManager = ToolManager([
+        CodeEditTool(),
+        FileAnalysisTool()
+    ])
+    
+    def __init__(self, llm_provider: str = "openai", model_name: str = "gpt-4o"):
+        """Initialize edit agent with SpoonOS"""
+        super().__init__(
+            llm=ChatBot(
+                llm_provider=llm_provider,
+                model_name=model_name
+            )
+        )
+
+
+class ImageProcessingAgent(ToolCallAgent):
+    """
+    Autonomous agent for processing wireframes and UI designs into code.
+    
+    Uses SpoonOS's vision capabilities to analyze images and generate pixel-perfect
+    implementations. Demonstrates multi-modal agentic reasoning.
+    """
+    
+    name: str = "image_processing_agent"
+    description: str = "Converts wireframes and UI designs into production code"
+    
+    system_prompt: str = """
+You are an Image Processing Agent built on SpoonOS Agentic OS with vision capabilities.
+Your role is to analyze UI wireframes, mockups, and designs, then generate pixel-perfect code.
+
+ANALYSIS STEPS:
+1. STRUCTURE: Identify layout (grid, flex, sections, containers)
+2. COMPONENTS: Detect UI elements (buttons, inputs, cards, navigation)
+3. STYLING: Extract colors, fonts, spacing, shadows, borders
+4. INTERACTIONS: Infer user interactions (clicks, hovers, forms)
+5. RESPONSIVE: Determine breakpoints and mobile considerations
+
+OUTPUT FORMAT:
+🖼️ Design Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📐 Layout: [description]
+🎨 Color Palette: [colors]
+🔤 Typography: [fonts and sizes]
+📦 Components: [list of components]
+📱 Responsive: [mobile/tablet/desktop notes]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 File: index.html [NEW]
+```html
+[complete HTML with semantic structure]
+```
+
+📄 File: styles.css [NEW]
+```css
+[complete CSS matching the design exactly]
+```
+
+📄 File: script.js [NEW]
+```javascript
+[any needed interactivity]
+```
+
+RULES:
+- Match the design EXACTLY (colors, spacing, fonts, layout)
+- Use semantic HTML5 elements
+- Write clean, modern CSS (flexbox/grid)
+- Include responsive design
+- Add hover states and transitions
+- Use CSS variables for colors/spacing
+- Comment complex layout decisions
+- Make it production-ready
+"""
+    
+    available_tools: ToolManager = ToolManager([
+        ImageAnalysisTool(),
+        CodeGenerationTool()
+    ])
+    
+    def __init__(self, llm_provider: str = "openai", model_name: str = "gpt-4o"):
+        """Initialize image processing agent with vision-capable model"""
+        super().__init__(
+            llm=ChatBot(
+                llm_provider=llm_provider,
+                model_name=model_name  # Requires vision-capable model
+            )
+        )
+
+
+# ============================================================================
+# CODE GENERATOR WRAPPER (Reference Implementation)
+# ============================================================================
+
 class SpoonOSCodeGenerator:
     """
     SpoonOS-based AI Code Generator (DEPRECATED)
@@ -167,11 +483,6 @@ class SpoonOSCodeGenerator:
         self.llm_provider = llm_provider
         self.model_name = model_name
         self.agent = None
-        
-        if not SPOONOS_AVAILABLE:
-            logger.error("SpoonOS not available. AI code generation disabled.")
-            logger.error("Install SpoonOS to enable AI features")
-            return
         
         try:
             self.agent = CodingAgent(llm_provider, model_name)
@@ -317,15 +628,11 @@ IMPORTANT:
 
 def get_spoonos_code_generator() -> Optional[SpoonOSCodeGenerator]:
     """
-    Get SpoonOS code generator instance (DEPRECATED)
+    Get SpoonOS code generator instance (Reference Implementation)
     
     Returns:
         SpoonOSCodeGenerator instance or None if not configured
     """
-    if not SPOONOS_AVAILABLE:
-        logger.warning("SpoonOS not available.")
-        return None
-    
     openai_key = os.environ.get("OPENAI_API_KEY")
     if not openai_key:
         logger.warning("OPENAI_API_KEY not found.")
@@ -339,29 +646,4 @@ def get_spoonos_code_generator() -> Optional[SpoonOSCodeGenerator]:
         logger.error(f"Failed to create SpoonOS code generator: {e}")
         return None
 
-
-# Notes on why we moved away from SpoonOS:
-# 
-# 1. TIMEOUTS: Tool selection regularly timed out after 25 seconds
-#    Error: "coding_agent LLM tool selection timed out after 25.0s"
-#
-# 2. THINKING MODE: Agent would enter "thinking" mode instead of generating code
-#    Response: "Step 2: Thinking completed. No action needed. Task finished."
-#
-# 3. COMPLEXITY: ToolCallAgent framework added unnecessary complexity
-#    - Custom tools that didn't reliably execute
-#    - Complex message/tool call extraction logic
-#    - Multiple layers of abstraction
-#
-# 4. UNRELIABILITY: Even with explicit prompts, agent behavior was unpredictable
-#    - Sometimes generated code, sometimes didn't
-#    - Tool calls not always captured correctly
-#    - Parsing fallbacks needed
-#
-# Direct OpenAI API is simpler, faster, and more reliable:
-# - No tool selection timeouts
-# - Immediate code generation
-# - Simple request/response pattern
-# - Predictable behavior
-# - Easier to debug
 

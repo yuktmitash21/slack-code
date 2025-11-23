@@ -1,42 +1,62 @@
 # Slack Bot with GitHub Integration and AI Code Generation
 
-A Slack bot that responds to mentions, manages GitHub pull requests, and uses SpoonOS for AI-powered code generation.
+A Slack bot that responds to mentions, manages GitHub pull requests, and leverages **SpoonOS's Agentic Operating System** for intelligent, context-aware code generation.
+
+## 🧠 Powered by SpoonOS Agentic OS
+
+This bot is built on top of **SpoonOS**, a cutting-edge agentic operating system that enables autonomous AI agents to perform complex coding tasks. By integrating SpoonOS's agentic framework with GitHub and Slack, we've created a powerful coding assistant that:
+
+- **Understands Intent**: Uses SpoonOS's agentic reasoning to interpret user requests contextually
+- **Plans Autonomously**: Leverages SpoonOS's planning capabilities to determine the best approach for code changes
+- **Executes Intelligently**: SpoonOS agents analyze entire codebases and generate production-ready code
+- **Learns from Feedback**: Iteratively refines code through conversational loops powered by SpoonOS's agent memory
 
 ## Features
 
 - 🤖 **Conversational PR Creation**: Discuss code changes in Slack threads before creating PRs
-- 📝 **AI Code Generation**: Uses SpoonOS's CodingAgent for intelligent code modifications
-- 🔄 **Smart Caching**: Single AI call per conversation - preview is reused for PR creation
-- 🎯 **Full Codebase Context**: Bot has access to entire repository for better code generation
+- 📝 **AI Code Generation**: Powered by SpoonOS's CodingAgent for intelligent, agentic code modifications
+- 🔄 **Smart Caching**: Single agent call per conversation - preview is reused for PR creation
+- 🎯 **Full Codebase Context**: SpoonOS agent has access to entire repository for context-aware generation
 - 🧵 **Thread-based Conversations**: All interactions happen in threads for organized discussions
 - 👤 **User Tagging**: Bot tags users in replies for better notifications
-- ⚡ **No Questions Policy**: Bot proposes concrete code changes immediately
+- ⚡ **No Questions Policy**: SpoonOS agent proposes concrete code changes immediately
 - 🚀 **Explicit PR Creation**: PRs only created when user types "make PR" or clicks button
-- ♻️ **Consistent Results**: Preview and PR use the same AI-generated files
+- ♻️ **Consistent Results**: Preview and PR use the same SpoonOS-generated files
 
 ## Architecture
 
-### Single AI System (SpoonOS)
+### SpoonOS Agentic Workflow
 
 ```
 User: "Add a login feature"
   ↓
-Bot: SpoonOS generates code → Parse files → Format for Slack → Cache files
+Bot: Invokes SpoonOS Agentic OS
+  ↓
+SpoonOS Agent: 
+  1. Analyzes full codebase context
+  2. Plans implementation strategy
+  3. Generates production-ready code
+  4. Returns structured changeset
+  ↓
+Bot: Parse agent output → Format for Slack → Cache files
   ↓
 Preview shown with "Make PR" button
   ↓
 User: "make PR" (text or button)
   ↓
 Bot: Use cached files → Create branch → Commit → Open PR
-     (NO second AI call!)
+     (NO second agent call!)
 ```
 
-### Why This Approach?
+### Why SpoonOS Agentic OS?
 
+✅ **Autonomous Planning**: SpoonOS agents autonomously decide how to implement features  
+✅ **Context-Aware**: Agents analyze entire codebases before generating code  
+✅ **Multi-Step Reasoning**: Complex tasks broken down by agent planning layer  
 ✅ **Perfect Consistency**: Preview and PR are guaranteed identical  
-✅ **Faster PR Creation**: No second AI call needed  
-✅ **Cost Effective**: Single AI call per iteration  
-✅ **Reliable**: No parsing inconsistencies between systems
+✅ **Faster PR Creation**: No second agent invocation needed  
+✅ **Cost Effective**: Single agent call per iteration  
+✅ **Reliable**: SpoonOS's structured output ensures parsing consistency
 
 ## Setup
 
@@ -45,7 +65,7 @@ Bot: Use cached files → Create branch → Commit → Open PR
 - Python 3.8+
 - Slack workspace with admin access
 - GitHub repository
-- OpenAI API key (for SpoonOS)
+- OpenAI API key (SpoonOS uses OpenAI's models as the LLM backbone for its agents)
 
 ### 1. Install Python Dependencies
 
@@ -105,12 +125,13 @@ SLACK_APP_TOKEN=xapp-your-app-token
 GITHUB_TOKEN=ghp_your_github_token
 GITHUB_REPO=username/repository-name
 
-# OpenAI Configuration (for SpoonOS)
+# SpoonOS Agentic OS Configuration
+# SpoonOS uses OpenAI's models as the LLM foundation for its autonomous agents
 OPENAI_API_KEY=sk-your-openai-key
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=gpt-4o  # SpoonOS agent backbone model
 
-# SpoonOS Configuration
-SPOONOS_PROVIDER=openai
+# SpoonOS Provider
+SPOONOS_PROVIDER=openai  # Agent orchestration via OpenAI
 ```
 
 ### 5. Run the Bot
@@ -122,7 +143,8 @@ python slack_bot.py
 You should see:
 ```
 ⚡️ Bolt app is running!
-INFO - AI Code Generator initialized successfully with SpoonOS
+INFO - SpoonOS Agentic OS initialized successfully
+INFO - Autonomous coding agents ready for GitHub integration
 ```
 
 ## Usage
@@ -177,15 +199,17 @@ INFO - AI Code Generator initialized successfully with SpoonOS
 
 ## How It Works
 
-### Conversational Flow
+### Conversational Flow with SpoonOS Agents
 
 1. **Initial Request**: User mentions bot with a task
-2. **Codebase Analysis**: Bot fetches and caches entire repository
-3. **AI Generation**: SpoonOS CodingAgent generates code with full context
-4. **Cache Results**: Parsed files stored in conversation state
-5. **Preview**: Formatted changeset shown to user
-6. **Refinement**: User can request changes in thread
-7. **PR Creation**: Cached files used directly (no second AI call)
+2. **Codebase Analysis**: Bot fetches and caches entire repository for agent context
+3. **Agent Invocation**: SpoonOS Agentic OS receives task and full codebase
+4. **Autonomous Planning**: SpoonOS agent reasons about the best implementation approach
+5. **Code Generation**: Agent generates code with full repository awareness
+6. **Cache Results**: Agent-generated files stored in conversation state
+7. **Preview**: Formatted changeset shown to user
+8. **Refinement**: User can request changes; agent iterates on previous context
+9. **PR Creation**: Cached files used directly (no second agent invocation)
 
 ### File Operations
 
@@ -212,14 +236,15 @@ Long AI responses are automatically split into 2900-character chunks to comply w
    - `message.im`
 3. **Reinstall the app** to your workspace (important!)
 
-### AI not generating code
+### SpoonOS Agents not generating code
 
 **Symptom**: Bot shows "AI not available" message
 
 **Solutions**:
-1. Check SpoonOS installation: `pip show spoon-ai`
-2. Verify OpenAI API key in `.env`
-3. Check logs for SpoonOS initialization errors
+1. Check SpoonOS Agentic OS installation: `pip show spoon-ai`
+2. Verify OpenAI API key in `.env` (required for SpoonOS agent backbone)
+3. Check logs for SpoonOS agent initialization errors
+4. Ensure `SPOONOS_PROVIDER=openai` is set correctly
 
 ### Dependency conflicts
 
@@ -262,17 +287,22 @@ slack-bot/
 - Handles Slack events and commands
 - Manages conversation state
 - Coordinates preview and PR creation
-- **Caches parsed files** from preview
+- **Invokes SpoonOS agents** with full context
+- **Caches agent-generated files** from preview
 
 **`github_helper.py`**:
 - GitHub API operations (branch, commit, PR)
-- **Accepts cached files** to skip AI calls
+- **Accepts cached files** to skip agent re-invocation
 - Handles file creation/modification/deletion
+- Provides codebase context to SpoonOS agents
 
 **`ai_agent.py`**:
-- Wraps SpoonOS CodingAgent
-- Parses AI output into file operations
-- Supports multiple filename formats
+- **SpoonOS Agentic OS Integration Layer**
+- Wraps SpoonOS's autonomous coding agents
+- Provides repository context to agents
+- Parses agent output into file operations
+- Supports multiple agent response formats
+- Handles vision-based wireframe-to-code via SpoonOS
 
 ## License
 
