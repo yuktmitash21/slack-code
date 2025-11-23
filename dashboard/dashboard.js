@@ -431,7 +431,7 @@
           {
             label: "PR Count",
             data: counts,
-            backgroundColor: "rgba(56, 189, 248, 0.8)",
+            backgroundColor: "rgba(129, 140, 248, 0.8)",
             borderRadius: 6,
           },
         ],
