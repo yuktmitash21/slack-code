@@ -459,9 +459,26 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             
             # Validate base64
             try:
-                b64.b64decode(base64_data[:100], validate=True)
-            except:
-                raise ValueError("Invalid base64 encoding")
+                decoded_bytes = b64.b64decode(base64_data, validate=True)
+                
+                # Auto-correct format mismatch
+                if image_format == 'jpeg' and not decoded_bytes.startswith(b'\xff\xd8\xff'):
+                    if decoded_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+                        image_format = 'png'
+                elif image_format == 'png' and not decoded_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+                    if decoded_bytes.startswith(b'\xff\xd8\xff'):
+                        image_format = 'jpeg'
+                
+                # Check for HTML/text content (not an image)
+                if decoded_bytes.startswith(b'<!DOCTYPE') or decoded_bytes.startswith(b'<html'):
+                    logger.error(f"Received HTML instead of image data")
+                    raise ValueError("Downloaded content is HTML, not an image")
+                
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.error(f"Base64 validation failed: {e}")
+                raise ValueError(f"Invalid base64 encoding: {e}")
             
             data_uri = f"data:image/{image_format};base64,{base64_data}"
             

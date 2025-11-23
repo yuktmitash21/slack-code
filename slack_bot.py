@@ -367,12 +367,16 @@ def extract_image_from_message(event, client, logger):
     """Extract image URL and file info from Slack message event"""
     try:
         files = event.get("files", [])
+        
         for file in files:
             if file.get("mimetype", "").startswith("image/"):
-                image_url = file.get("url_private")
+                # Prefer url_private_download over url_private
+                image_url = file.get("url_private_download") or file.get("url_private")
+                
                 if image_url:
                     logger.info(f"Found image: {file.get('name')} ({file.get('mimetype')})")
                     return image_url, file
+        
         return None, None
     except Exception as e:
         logger.error(f"Error extracting image: {e}")
@@ -384,108 +388,79 @@ def download_slack_image(image_url, client, file_info=None):
     try:
         import requests
         import base64
-        import re
-        import imghdr
         from io import BytesIO
+        
         try:
             from PIL import Image
         except ImportError:
             Image = None
         
-        supported_formats = {"png", "jpeg", "gif", "webp"}
-        format_map = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png', 'gif': 'gif', 'webp': 'webp'}
+        # Use file ID if available for better download method
+        if file_info and file_info.get('id'):
+            try:
+                # Try using the Slack SDK's file info to get download URL
+                file_id = file_info.get('id')
+                file_response = client.files_info(file=file_id)
+                file_data = file_response.get('file', {})
+                
+                # Get the best URL for download
+                download_url = (
+                    file_data.get('url_private_download') or 
+                    file_data.get('url_private') or 
+                    image_url
+                )
+            except Exception as e:
+                logger.warning(f"Could not get file info via SDK, using direct URL")
+                download_url = image_url
+        else:
+            download_url = image_url
         
         bot_token = os.environ.get("SLACK_BOT_TOKEN")
+        if not bot_token:
+            logger.error("SLACK_BOT_TOKEN not found in environment!")
+            return None
+        
         headers = {"Authorization": f"Bearer {bot_token}"}
         
-        response = requests.get(image_url, headers=headers)
+        response = requests.get(download_url, headers=headers, timeout=30)
         response.raise_for_status()
         
         raw_bytes = response.content
-        logger.info(f"Downloaded image bytes: {len(raw_bytes)} bytes")
         
-        # Candidate formats from multiple sources
-        candidate_formats = []
+        # Check if we got HTML instead of an image
+        if raw_bytes.startswith(b'<!DOCTYPE') or raw_bytes.startswith(b'<html') or raw_bytes.startswith(b'<?xml'):
+            logger.error(f"Received HTML/XML instead of image data")
+            return None
         
-        # Detect via magic bytes
-        try:
-            detected_format = imghdr.what(None, raw_bytes)
-            if detected_format:
-                logger.info(f"Detected format from magic bytes: {detected_format}")
-                candidate_formats.append(detected_format)
-        except Exception as e:
-            logger.warning(f"Could not detect format from magic bytes: {e}")
+        # Detect format from magic bytes
+        if raw_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            image_format = 'png'
+        elif raw_bytes.startswith(b'\xff\xd8\xff'):
+            image_format = 'jpeg'
+        elif raw_bytes.startswith(b'GIF87a') or raw_bytes.startswith(b'GIF89a'):
+            image_format = 'gif'
+        elif raw_bytes.startswith(b'RIFF') and b'WEBP' in raw_bytes[:12]:
+            image_format = 'webp'
+        else:
+            # Default to PNG if unknown
+            image_format = 'png'
         
-        # Content-Type header
-        content_type = response.headers.get('Content-Type', '')
-        if content_type:
-            content_part = content_type.split(';')[0].strip().lower()
-            if content_part.startswith('image/'):
-                candidate_formats.append(content_part[6:].strip())
-            else:
-                candidate_formats.append(content_part.split('/')[-1].strip())
-        
-        # File info from Slack event
-        if file_info:
-            mimetype = file_info.get('mimetype', '')
-            if mimetype:
-                mimetype = mimetype.lower().strip()
-                if mimetype.startswith('image/'):
-                    candidate_formats.append(mimetype[6:].strip())
-                else:
-                    candidate_formats.append(mimetype.split('/')[-1].strip())
-        
-        # URL extension
-        url_match = re.search(r'\.(png|jpg|jpeg|gif|webp)$', image_url.lower())
-        if url_match:
-            candidate_formats.append(url_match.group(1))
-        
-        normalized_format = None
-        for candidate in candidate_formats:
-            if not candidate:
-                continue
-            normalized = format_map.get(candidate.lower(), candidate.lower())
-            if normalized:
-                normalized_format = normalized
-                break
-        
-        if not normalized_format:
-            normalized_format = 'png'
-        
-        logger.info(f"Initial normalized format: {normalized_format}")
-        
-        # Convert unsupported formats to PNG using Pillow
-        if normalized_format not in supported_formats:
-            if Image is None:
-                logger.error("Pillow not installed. Cannot convert unsupported image format.")
-                return None
-            try:
-                image = Image.open(BytesIO(raw_bytes))
-                if image.mode in ("P", "RGBA", "LA"):
-                    image = image.convert("RGBA")
-                else:
-                    image = image.convert("RGB")
-                buffer = BytesIO()
-                image.save(buffer, format="PNG")
-                raw_bytes = buffer.getvalue()
-                normalized_format = "png"
-                logger.info("Converted unsupported image format to PNG using Pillow")
-            except Exception as convert_error:
-                logger.error(f"Failed to convert image to PNG: {convert_error}")
-                return None
-        
+        # Encode to base64
         image_data = base64.b64encode(raw_bytes).decode('utf-8')
-        logger.info(f"Final image format: {normalized_format}, base64 length: {len(image_data)} chars")
+        logger.info(f"Image downloaded successfully: {image_format}, {len(raw_bytes)} bytes")
         
         return {
             "data": image_data,
-            "format": normalized_format,
+            "format": image_format,
             "url": image_url
         }
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP Error downloading image: {e.response.status_code}")
+        if e.response.status_code == 403:
+            logger.error("Bot lacks 'files:read' permission")
+        return None
     except Exception as e:
         logger.error(f"Error downloading image: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         return None
 
 
@@ -624,6 +599,7 @@ def handle_pr_conversation(
             logger.info("📸 Updated image data in conversation")
         if channel_name:
             pr_conversations[conversation_key]["channel_name"] = channel_name
+        logger.info(f"Created new PR conversation: {conversation_key}")
     
     # Always use the stored user_id to tag
     stored_user_id = pr_conversations[conversation_key]["user_id"]
@@ -916,11 +892,6 @@ def _record_pr_creation(conversation_key, pr_number):
 def _send_pr_result(result, task_description, say, thread_ts, user_id):
     """Helper to send PR creation result"""
     try:
-        logger.info(f"=== _send_pr_result called ===")
-        logger.info(f"Result: {result}")
-        logger.info(f"Task: {task_description}")
-        logger.info(f"User ID: {user_id}")
-        
         if not isinstance(result, dict):
             raise ValueError(f"Invalid result type: {type(result)}")
         
@@ -930,8 +901,6 @@ def _send_pr_result(result, task_description, say, thread_ts, user_id):
             branch_name = result.get('branch_name', 'N/A')
             pr_url = result.get('pr_url', 'N/A')
             changes = result.get('changes', 'No changes listed')
-            
-            logger.info(f"PR Number: {pr_number} (type: {type(pr_number)})")
             
             response = f"""✅ *Pull Request Created Successfully!*
 
@@ -957,7 +926,6 @@ The PR is ready for review! 🎉"""
             
             # Add merge button if we have a valid PR number
             if pr_number and pr_number != 'N/A' and pr_number != 'None':
-                logger.info(f"Adding Merge PR button for PR #{pr_number}")
                 blocks.append({
                     "type": "actions",
                     "elements": [
@@ -974,16 +942,12 @@ The PR is ready for review! 🎉"""
                         }
                     ]
                 })
-                logger.info(f"Blocks with button: {blocks}")
-            else:
-                logger.warning(f"Not adding Merge button - invalid PR number: {pr_number}")
             
             say(
                 text=response,  # Fallback text
                 blocks=blocks,
                 thread_ts=thread_ts
             )
-            logger.info(f"Sent PR result message with {len(blocks)} blocks")
         else:
             error_msg = result.get('error', 'Unknown error occurred')
             response = f"""❌ *Failed to Create Pull Request*
@@ -1384,14 +1348,20 @@ def handle_make_pr_button_click(ack, body, client, logger):
         thread_ts = body["actions"][0]["value"]
         channel_id = body["channel"]["id"]
         
-        logger.info(f"Make PR button clicked by {user_id} for thread {thread_ts}")
+        logger.info(f"Make PR button clicked for thread {thread_ts}")
         
         # Check if conversation exists
         if thread_ts not in pr_conversations:
+            logger.warning(f"Conversation {thread_ts} not found")
+            
             client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_ts,
-                text=f"<@{user_id}> ❌ Conversation not found. Please start a new PR request."
+                text=f"<@{user_id}> ❌ Conversation not found. This can happen if:\n" +
+                     "• The bot was restarted (conversations are in-memory only)\n" +
+                     "• The conversation timed out\n" +
+                     "• You're clicking an old 'Make PR' button\n\n" +
+                     "💡 Please start a new conversation by mentioning the bot with your request."
             )
             return
         
@@ -1489,7 +1459,6 @@ You can now review and merge the PR!"""
                         }
                     ]
                 })
-                logger.info(f"Added Merge PR button for PR #{pr_number} in button handler")
             
             client.chat_postMessage(
                 channel=channel_id,
@@ -1514,7 +1483,7 @@ Please try again or check the logs for details.
         
         # Clean up the conversation
         del pr_conversations[thread_ts]
-        logger.info(f"Cleaned up conversation for thread {thread_ts}")
+        logger.info(f"PR conversation cleaned up: {thread_ts}")
         
     except Exception as e:
         logger.error(f"Error handling Make PR button: {e}")
