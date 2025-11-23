@@ -1,7 +1,7 @@
 (() => {
   const HOUR_MS = 60 * 60 * 1000;
   const DAY_MS = 24 * HOUR_MS;
-  const DEFAULT_RANGE = "3d";
+  const DEFAULT_RANGE = "5m";
 
   let rawData = [];
   let lineChart = null;
@@ -64,6 +64,10 @@
   function resolveRangeMeta(rangeKey) {
     const now = new Date();
     switch (rangeKey) {
+      case "5m": {
+        const start = new Date(now.getTime() - 5 * 60 * 1000);
+        return { mode: "minute", start, end: now, bucketMinutes: 1, minutes: 5 };
+      }
       case "1h": {
         const start = new Date(now.getTime() - HOUR_MS);
         return { mode: "hour", start, end: now, bucketMinutes: 5, hours: 1 };
@@ -71,6 +75,10 @@
       case "6h": {
         const start = new Date(now.getTime() - 6 * HOUR_MS);
         return { mode: "hour", start, end: now, bucketMinutes: 30, hours: 6 };
+      }
+      case "18h": {
+        const start = new Date(now.getTime() - 18 * HOUR_MS);
+        return { mode: "hour", start, end: now, bucketMinutes: 60, hours: 18 };
       }
       case "today": {
         const start = new Date(now);
@@ -113,6 +121,9 @@
     if (meta.mode === "day") {
       windowUnits = meta.days || Math.max(1, Math.round((meta.end - meta.start) / DAY_MS));
       timeUnit = windowUnits === 1 ? "day" : "day";
+    } else if (meta.mode === "minute") {
+      windowUnits = meta.minutes || Math.max(1, Math.round((meta.end - meta.start) / (60 * 1000)));
+      timeUnit = "minute";
     } else {
       windowUnits = meta.hours || Math.max(1, Math.round((meta.end - meta.start) / HOUR_MS));
       timeUnit = windowUnits === 1 ? "hour" : "hour";
@@ -398,11 +409,10 @@
     // Define time segments (in milliseconds)
     const segments = [
       { label: "< 1s", max: 1000 },
-      { label: "1-5s", min: 1000, max: 5000 },
-      { label: "5-10s", min: 5000, max: 10000 },
+      { label: "1-3s", min: 1000, max: 3000 },
+      { label: "3-5s", min: 3000, max: 5000 },
+      { label: "6-10s", min: 5000, max: 10000 },
       { label: "10-30s", min: 10000, max: 30000 },
-      { label: "30-60s", min: 30000, max: 60000 },
-      { label: "> 60s", min: 60000 },
     ];
 
     // Count PRs in each segment

@@ -105,8 +105,8 @@
 
       .summary-cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 16px;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 24px;
         padding: 24px clamp(16px, 5vw, 64px);
       }
 
@@ -114,10 +114,13 @@
         background: var(--panel);
         border-radius: 14px;
         border: 1px solid var(--border);
-        padding: 18px;
+        padding: 24px 18px;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 8px;
+        min-height: 120px;
+        width: auto;
+        justify-content: center;
       }
 
       .summary-card p {
@@ -238,10 +241,12 @@
           <label>
             <span>Date Range</span>
             <select id="date-range">
+              <option value="5m" selected>Last 5 mins</option>
               <option value="1h">Last 1 hour</option>
               <option value="6h">Last 6 hours</option>
+              <option value="18h">Last 18 hours</option>
               <option value="today">Today</option>
-              <option value="3d" selected>Last 3 days</option>
+              <option value="3d">Last 3 days</option>
             </select>
           </label>
         </div>

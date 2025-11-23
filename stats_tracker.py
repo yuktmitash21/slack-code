@@ -1,12 +1,27 @@
 import json
 import os
 import threading
+import fcntl
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 
 STATS_DIR = os.path.join(os.path.dirname(__file__), "data")
 STATS_FILE = os.path.join(STATS_DIR, "pr_activity.json")
-_LOCK = threading.Lock()
+
+class FileLock:
+    def __init__(self):
+        self.lock_path = STATS_FILE + ".lock"
+        self.fd = None
+    
+    def __enter__(self):
+        self.fd = open(self.lock_path, "w")
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        self.fd.close()
+
+_LOCK = FileLock()
 
 os.makedirs(STATS_DIR, exist_ok=True)
 
@@ -51,6 +66,8 @@ def log_pr_creation(
     if not pr_number:
         return
 
+    print(f"DEBUG: Attempting to log PR #{pr_number} for channel {channel_name} to {STATS_FILE}")
+
     record = {
         "pr_number": int(pr_number),
         "channel_id": channel_id,
@@ -69,9 +86,12 @@ def log_pr_creation(
         existing = next((r for r in records if r.get("pr_number") == pr_number), None)
         if existing:
             existing.update(record)
+            print(f"DEBUG: Updated existing PR #{pr_number} in records")
         else:
             records.append(record)
+            print(f"DEBUG: Added new PR #{pr_number} to records")
         _write_records(records)
+        print(f"DEBUG: Successfully wrote to {STATS_FILE}")
 
 
 def mark_pr_merged(pr_number: Optional[int], merged_at: Optional[str] = None) -> None:

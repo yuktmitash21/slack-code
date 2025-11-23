@@ -130,23 +130,43 @@
     "processing_time_ms": 4762
   },
   {
-    "pr_number": 18,
-    "channel_id": "C09UL4V09CM",
-    "channel_name": "#testing",
-    "created_at": "2025-11-23T10:44:27.480374+00:00",
+    "pr_number": 105,
+    "channel_id": "C09UUDT4DCL",
+    "channel_name": "#test-dashboard",
+    "created_at": "2025-11-23T09:49:50.559342+00:00",
     "merged": true,
-    "merged_at": "2025-11-23T10:44:33.388884+00:00",
-    "thread_ts": "1763894583.287329",
-    "processing_time_ms": 4744
+    "merged_at": "2025-11-23T09:50:05.796695+00:00",
+    "thread_ts": "1763891340.898009",
+    "processing_time_ms": 4722
   },
   {
-    "pr_number": 19,
-    "channel_id": "C09UL4V09CM",
-    "channel_name": "#testing",
-    "created_at": "2025-11-23T10:46:17.377683+00:00",
+    "pr_number": 106,
+    "channel_id": "C09UUDT4DCL",
+    "channel_name": "#test-dashboard",
+    "created_at": "2025-11-23T09:55:23.042981+00:00",
     "merged": false,
     "merged_at": null,
-    "thread_ts": "1763894730.785019",
-    "processing_time_ms": 4897
+    "thread_ts": "1763891669.366859",
+    "processing_time_ms": 7374
+  },
+  {
+    "pr_number": 107,
+    "channel_id": "C09UUDT4DCL",
+    "channel_name": "#test-dashboard",
+    "created_at": "2025-11-23T10:02:33.600011+00:00",
+    "merged": false,
+    "merged_at": null,
+    "thread_ts": "1763892132.204239",
+    "processing_time_ms": 5788
+  },
+  {
+    "pr_number": 108,
+    "channel_id": "C09UUDT4DCL",
+    "channel_name": "#test-dashboard",
+    "created_at": "2025-11-23T10:03:17.895156+00:00",
+    "merged": false,
+    "merged_at": null,
+    "thread_ts": "1763892182.408879",
+    "processing_time_ms": 4682
   }
 ]
