@@ -665,6 +665,7 @@ def handle_pr_conversation(
         return
     
     # Get AI response
+    loading_ts = None  # Initialize to track loading message
     try:
         # Use direct OpenAI for both preview and PR creation (with caching for consistency)
         
@@ -748,6 +749,13 @@ Rules:
             logger.info(f"   Image format: {stored_image_data.get('format')}")
             logger.info(f"   Image data length: {len(stored_image_data.get('data', ''))}")
         
+        # Send loading message while AI generates
+        loading_msg = say(
+            text=f"<@{stored_user_id}> :hourglass_flowing_sand: *Generating changeset...*\n\n Spoon AI is analyzing your request and crafting code changes..._",
+            thread_ts=thread_ts
+        )
+        loading_ts = loading_msg.get("ts") if loading_msg else None
+        
         # Generate changeset preview using SpoonOS with vision if image is available
         ai_result = _generate_changeset_preview(
             prompt=planning_prompt,
@@ -757,10 +765,20 @@ Rules:
         )
         
         if not ai_result.get("success"):
-            say(
-                text=f"<@{stored_user_id}> ❌ AI error: {ai_result.get('error')}",
-                thread_ts=thread_ts
-            )
+            error_text = f"<@{stored_user_id}> ❌ AI error: {ai_result.get('error')}"
+            
+            # Update loading message with error, or send new message
+            if loading_ts and client:
+                try:
+                    client.chat_update(
+                        channel=channel_id,
+                        ts=loading_ts,
+                        text=error_text
+                    )
+                except Exception:
+                    say(text=error_text, thread_ts=thread_ts)
+            else:
+                say(text=error_text, thread_ts=thread_ts)
             return
         
         ai_response = ai_result.get("raw_response", "")
@@ -865,20 +883,49 @@ Rules:
         logger.info(f"   Number of chunks: {len(message_chunks)}")
         logger.info("=" * 80)
         
-        say(
-            text=f"<@{stored_user_id}> Proposed changeset ready! (see blocks for details)",
-            blocks=blocks,
-            thread_ts=thread_ts
-        )
-        
-        logger.info("✅ Slack message sent successfully!")
+        # Update loading message if we sent one, otherwise send new message
+        if loading_ts and client:
+            try:
+                client.chat_update(
+                    channel=channel_id,
+                    ts=loading_ts,
+                    text=f"<@{stored_user_id}> Proposed changeset ready! (see blocks for details)",
+                    blocks=blocks
+                )
+                logger.info("✅ Updated loading message with changeset!")
+            except Exception as update_error:
+                logger.warning(f"Could not update loading message: {update_error}")
+                # Fall back to sending new message
+                say(
+                    text=f"<@{stored_user_id}> Proposed changeset ready! (see blocks for details)",
+                    blocks=blocks,
+                    thread_ts=thread_ts
+                )
+                logger.info("✅ Sent new message instead!")
+        else:
+            say(
+                text=f"<@{stored_user_id}> Proposed changeset ready! (see blocks for details)",
+                blocks=blocks,
+                thread_ts=thread_ts
+            )
+            logger.info("✅ Slack message sent successfully!")
         
     except Exception as e:
         logger.error(f"Error in PR conversation: {e}")
-        say(
-            text=f"<@{stored_user_id}> ❌ Error: {str(e)}",
-            thread_ts=thread_ts
-        )
+        error_text = f"<@{stored_user_id}> ❌ Error: {str(e)}"
+        
+        # Update loading message with error, or send new message
+        if loading_ts and client:
+            try:
+                client.chat_update(
+                    channel=channel_id,
+                    ts=loading_ts,
+                    text=error_text
+                )
+            except Exception:
+                say(text=error_text, thread_ts=thread_ts)
+        else:
+            say(text=error_text, thread_ts=thread_ts)
 
 
 def _record_pr_creation(conversation_key, pr_number, processing_time_ms=None):
