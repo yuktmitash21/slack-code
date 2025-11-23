@@ -4,40 +4,88 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Slack Code UI</title>
-    <link rel="stylesheet" href="style.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        nav {
+            background-color: #333;
+            color: white;
+            padding: 1em;
+        }
+        nav ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        nav ul li {
+            display: inline;
+            margin-right: 10px;
+        }
+        nav ul li a {
+            color: white;
+            text-decoration: none;
+        }
+        .sidebar {
+            width: 200px;
+            background-color: #f4f4f4;
+            padding: 15px;
+            position: fixed;
+            top: 50px;
+            left: 0;
+        }
+        .content {
+            margin-left: 220px;
+            padding: 20px;
+        }
+    </style>
 </head>
 <body>
-    <header>
-        <h1>Slack Code UI</h1>
-        <nav>
-            <ul>
-                <li><a href="#home">Home</a></li>
-                <li><a href="#features">Features</a></li>
-                <li><a href="#contact">Contact</a></li>
-            </ul>
-        </nav>
-    </header>
-    <div class="sidebar">
+    <nav>
         <ul>
-            <li><a href="#dashboard">Dashboard</a></li>
-            <li><a href="#settings">Settings</a></li>
-            <li><a href="#profile">Profile</a></li>
+            <li><a href="#section1">Section 1</a></li>
+            <li><a href="#section2">Section 2</a></li>
+            <li><a href="#section3">Section 3</a></li>
         </ul>
+    </nav>
+    <div class="sidebar">
+        <h2>Sidebar Content</h2>
+        <p>This is the sidebar content.</p>
     </div>
-    <main>
-        <section id="home">
-            <h2>Welcome to Slack Code</h2>
-            <p>Enhanced UI for better code management.</p>
-        </section>
-        <section id="features">
-            <h2>Features</h2>
-            <p>Discover the robust features of our UI.</p>
-        </section>
-        <section id="contact">
-            <h2>Contact Us</h2>
-            <p>Reach out for more information.</p>
-        </section>
-    </main>
-    <script src="ui.js"></script>
+    <div class="content">
+        <h1 id="section1">Section 1</h1>
+        <p>Content for section 1.</p>
+        <h1 id="section2">Section 2</h1>
+        <p>Content for section 2.</p>
+        <h1 id="section3">Section 3</h1>
+        <p>Content for section 3.</p>
+    </div>
+    <button id="sidebarToggle" style="position: fixed; bottom: 20px; right: 20px;">Toggle Sidebar</button>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const navLinks = document.querySelectorAll('nav a');
+            navLinks.forEach(link => {
+                link.addEventListener('click', function(event) {
+                    event.preventDefault();
+                    const targetId = this.getAttribute('href').substring(1);
+                    const targetElement = document.getElementById(targetId);
+                    if (targetElement) {
+                        window.scrollTo({
+                            top: targetElement.offsetTop,
+                            behavior: 'smooth'
+                        });
+                    }
+                });
+            });
+
+            const sidebarToggle = document.getElementById('sidebarToggle');
+            sidebarToggle.addEventListener('click', function() {
+                const sidebar = document.querySelector('.sidebar');
+                if (sidebar) {
+                    sidebar.style.display = sidebar.style.display === 'none' ? 'block' : 'none';
+                }
+            });
+        });
+    </script>
 </body>
 </html>
