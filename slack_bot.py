@@ -62,13 +62,13 @@ def is_ready_to_create_pr(message_text):
 
 def _generate_changeset_preview(prompt: str, context: str, github_helper) -> dict:
     """
-    Generate a changeset preview using SpoonOS (same AI for preview and PR)
+    Generate a changeset preview using direct OpenAI API
     This shows proposed changes to the user before PR creation
     
     Returns both the formatted response AND parsed files for caching
     """
     try:
-        logger.info("Generating changeset preview with SpoonOS CodingAgent...")
+        logger.info("Generating changeset preview with OpenAI...")
         
         # Use the same AI generator as PR creation
         if not github_helper or not github_helper.use_ai or not github_helper.ai_generator:
@@ -105,7 +105,7 @@ The user can refine these changes through conversation before creating the PR.
         
         logger.info(f"SpoonOS preview generated: {len(parsed_files)} file(s)")
         
-        # Format the response as a changeset for Slack
+        # Format the response as a changeset for Slack with GitHub-style diff
         if parsed_files:
             formatted_response = "📝 PROPOSED CHANGESET\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             
@@ -114,14 +114,42 @@ The user can refine these changes through conversation before creating the PR.
                 action = file_info.get("action", "NEW")
                 content = file_info.get("content", "")
                 
-                formatted_response += f"📄 File: {filepath} [{action}]\n\n"
+                # Calculate line stats
+                lines = content.split('\n') if content else []
+                line_count = len(lines)
                 
+                # Format file header with diff stats
                 if action == "DELETED":
-                    formatted_response += f"_This file will be deleted_\n\n"
-                else:
-                    # Show preview of content
-                    content_preview = content[:500] + "..." if len(content) > 500 else content
-                    formatted_response += f"```\n{content_preview}\n```\n\n"
+                    formatted_response += f"🔴 `{filepath}` *[DELETED]* `-{line_count}`\n\n"
+                    formatted_response += f"```diff\n"
+                    # Show deleted lines with - prefix (red in diff)
+                    preview_lines = lines[:20] if len(lines) > 20 else lines
+                    for line in preview_lines:
+                        formatted_response += f"- {line}\n"
+                    if len(lines) > 20:
+                        formatted_response += f"... ({len(lines) - 20} more lines)\n"
+                    formatted_response += f"```\n\n"
+                elif action == "NEW":
+                    formatted_response += f"🟢 `{filepath}` *[NEW]* `+{line_count}`\n\n"
+                    formatted_response += f"```diff\n"
+                    # Show new lines with + prefix (green in diff)
+                    preview_lines = lines[:20] if len(lines) > 20 else lines
+                    for line in preview_lines:
+                        formatted_response += f"+ {line}\n"
+                    if len(lines) > 20:
+                        formatted_response += f"... ({len(lines) - 20} more lines)\n"
+                    formatted_response += f"```\n\n"
+                else:  # MODIFIED
+                    # For modified files, we don't have the old content to compare
+                    # So we just show the new content with + prefix
+                    formatted_response += f"🟡 `{filepath}` *[MODIFIED]* `~{line_count}`\n\n"
+                    formatted_response += f"```diff\n"
+                    preview_lines = lines[:20] if len(lines) > 20 else lines
+                    for line in preview_lines:
+                        formatted_response += f"+ {line}\n"
+                    if len(lines) > 20:
+                        formatted_response += f"... ({len(lines) - 20} more lines)\n"
+                    formatted_response += f"```\n\n"
                 
                 formatted_response += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             
@@ -570,7 +598,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
     
     # Get AI response
     try:
-        # Use SpoonOS for both preview and PR creation (with caching for consistency)
+        # Use direct OpenAI for both preview and PR creation (with caching for consistency)
         
         # Fetch codebase context once and cache it (for conversation preview)
         # Safety check: add codebase_context if it doesn't exist (for old conversations)
@@ -580,7 +608,7 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
         if pr_conversations[conversation_key]["codebase_context"] is None:
             logger.info("Fetching full codebase context for conversation preview...")
             say(
-                text=f"<@{stored_user_id}> 📚 Analyzing codebase with SpoonOS...",
+                text=f"<@{stored_user_id}> 📚 Analyzing codebase...",
                 thread_ts=thread_ts
             )
             try:

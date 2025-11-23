@@ -103,7 +103,11 @@ class GitHubPRHelper:
                 
                 file_count = 0
                 total_size = 0
-                max_file_size = 500 * 1024  # 500KB per file limit
+                max_file_size = 50 * 1024  # 50KB per file limit (reduced from 500KB)
+                max_total_tokens = 60000  # Max ~60k tokens for context (leaves room for prompt/response)
+                
+                # Collect all files first, then prioritize
+                files_to_include = []
                 
                 # Walk through the repository
                 for root, dirs, files in os.walk(temp_dir):
@@ -123,29 +127,58 @@ class GitHubPRHelper:
                         try:
                             file_size = os.path.getsize(filepath)
                             if file_size > max_file_size:
-                                logger.info(f"Skipping large file: {relative_path} ({file_size} bytes)")
+                                logger.debug(f"Skipping large file: {relative_path} ({file_size} bytes)")
                                 continue
                         except OSError:
                             continue
                         
-                        # Read file content
-                        try:
-                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                                content = f.read()
-                            
-                            context_parts.append(f"--- FILE: {relative_path} ---")
-                            context_parts.append(content)
-                            context_parts.append(f"--- END FILE: {relative_path} ---")
-                            context_parts.append("")
-                            
-                            file_count += 1
-                            total_size += len(content)
-                        except Exception as e:
-                            logger.warning(f"Could not read file {relative_path}: {e}")
+                        files_to_include.append((filepath, relative_path, file_size))
                 
-                logger.info(f"Read {file_count} files, total {total_size} characters")
+                # Sort by size (smaller files first - more likely to be relevant configs/helpers)
+                files_to_include.sort(key=lambda x: x[2])
                 
-                return "\n".join(context_parts)
+                # Add files until we hit token limit
+                estimated_tokens = 0
+                files_added = []
+                
+                for filepath, relative_path, file_size in files_to_include:
+                    # Estimate tokens (roughly 4 chars = 1 token)
+                    estimated_file_tokens = file_size // 4
+                    
+                    if estimated_tokens + estimated_file_tokens > max_total_tokens:
+                        logger.info(f"Stopping at {file_count} files to stay within token limit")
+                        logger.info(f"Skipping remaining {len(files_to_include) - len(files_added)} files")
+                        break
+                    
+                    # Read file content
+                    try:
+                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        context_parts.append(f"--- FILE: {relative_path} ---")
+                        context_parts.append(content)
+                        context_parts.append(f"--- END FILE: {relative_path} ---")
+                        context_parts.append("")
+                        
+                        file_count += 1
+                        total_size += len(content)
+                        estimated_tokens += estimated_file_tokens
+                        files_added.append(relative_path)
+                    except Exception as e:
+                        logger.warning(f"Could not read file {relative_path}: {e}")
+                
+                logger.info(f"Read {file_count} files, total {total_size} characters (~{estimated_tokens} tokens)")
+                
+                # Build final context
+                full_context = "\n".join(context_parts)
+                
+                # Final safety check: truncate if still too large
+                max_context_chars = max_total_tokens * 4  # Conservative: 4 chars per token
+                if len(full_context) > max_context_chars:
+                    logger.warning(f"Context still too large ({len(full_context)} chars), truncating to {max_context_chars}")
+                    full_context = full_context[:max_context_chars] + "\n\n[... context truncated to fit token limit ...]"
+                
+                return full_context
                 
             finally:
                 # Clean up temp directory
