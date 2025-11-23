@@ -112,6 +112,8 @@ CRITICAL RULES:
 GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
 
             logger.info("Generating code with direct OpenAI API...")
+            logger.info(f"Image data present: {image_data is not None}")
+            logger.info(f"LLM provider: {self.llm_provider}")
             
             # If image is provided, use vision API for wireframe analysis
             if image_data and self.llm_provider == "openai":
@@ -120,6 +122,9 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             elif image_data and self.llm_provider == "anthropic":
                 logger.info("Using Anthropic Claude Vision for wireframe analysis...")
                 return await self._generate_with_vision_anthropic(task_description, context, image_data)
+            
+            if image_data:
+                logger.warning(f"⚠️ Image data was provided but NOT using vision API! Provider: {self.llm_provider}")
             
             # Use text-based generation
             client = openai.OpenAI()

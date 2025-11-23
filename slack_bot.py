@@ -45,6 +45,7 @@ def _generate_changeset_preview(prompt: str, context: str, github_helper, image_
     """
     try:
         logger.info("Generating changeset preview with OpenAI...")
+        logger.info(f"📸 Image data received in _generate_changeset_preview: {image_data is not None}")
         
         # Use the same AI generator as PR creation
         if not github_helper or not github_helper.use_ai or not github_helper.ai_generator:
@@ -373,6 +374,7 @@ def extract_image_from_message(event, client, logger):
                 image_url = file.get("url_private")
                 if image_url:
                     logger.info(f"Found image: {file.get('name')} ({file.get('mimetype')})")
+                    logger.info(f"🔗 Initial image URL from event: {image_url}")
                     return image_url, file
         return None, None
     except Exception as e:
@@ -385,108 +387,80 @@ def download_slack_image(image_url, client, file_info=None):
     try:
         import requests
         import base64
-        import re
-        import imghdr
-        from io import BytesIO
-        try:
-            from PIL import Image
-        except ImportError:
-            Image = None
-        
-        supported_formats = {"png", "jpeg", "gif", "webp"}
-        format_map = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png', 'gif': 'gif', 'webp': 'webp'}
+        # Use file ID to get fresh download URL via SDK
+        if file_info and file_info.get('id'):
+            try:
+                file_id = file_info.get('id')
+                logger.info(f"🔗 File ID: {file_id}")
+                
+                # Get fresh file info with current download URLs
+                file_response = client.files_info(file=file_id)
+                file_data = file_response.get('file', {})
+                
+                # Get the download URL - prefer url_private_download
+                download_url = file_data.get('url_private_download')
+                if not download_url:
+                    download_url = file_data.get('url_private')
+                if not download_url:
+                    logger.error(f"No download URL found in file info")
+                    return None
+                
+                logger.info(f"🔗 Download URL: {download_url}")
+            except Exception as e:
+                logger.error(f"Could not get file info via SDK: {e}")
+                return None
+        else:
+            logger.error(f"No file_info provided, cannot download image")
+            return None
         
         bot_token = os.environ.get("SLACK_BOT_TOKEN")
+        if not bot_token:
+            logger.error("SLACK_BOT_TOKEN not found in environment!")
+            return None
+        
         headers = {"Authorization": f"Bearer {bot_token}"}
         
-        response = requests.get(image_url, headers=headers)
+        logger.info(f"🌐 Attempting download from: {download_url}")
+        response = requests.get(download_url, headers=headers, timeout=30)
         response.raise_for_status()
         
         raw_bytes = response.content
         logger.info(f"Downloaded image bytes: {len(raw_bytes)} bytes")
         
-        # Candidate formats from multiple sources
-        candidate_formats = []
+        # Check if we got HTML instead of an image
+        if raw_bytes.startswith(b'<!DOCTYPE') or raw_bytes.startswith(b'<html') or raw_bytes.startswith(b'<?xml'):
+            logger.error(f"Received HTML/XML instead of image data")
+            return None
         
-        # Detect via magic bytes
-        try:
-            detected_format = imghdr.what(None, raw_bytes)
-            if detected_format:
-                logger.info(f"Detected format from magic bytes: {detected_format}")
-                candidate_formats.append(detected_format)
-        except Exception as e:
-            logger.warning(f"Could not detect format from magic bytes: {e}")
+        # Detect format from magic bytes
+        if raw_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            image_format = 'png'
+        elif raw_bytes.startswith(b'\xff\xd8\xff'):
+            image_format = 'jpeg'
+        elif raw_bytes.startswith(b'GIF87a') or raw_bytes.startswith(b'GIF89a'):
+            image_format = 'gif'
+        elif raw_bytes.startswith(b'RIFF') and b'WEBP' in raw_bytes[:12]:
+            image_format = 'webp'
+        else:
+            # Default to PNG if unknown
+            image_format = 'png'
         
-        # Content-Type header
-        content_type = response.headers.get('Content-Type', '')
-        if content_type:
-            content_part = content_type.split(';')[0].strip().lower()
-            if content_part.startswith('image/'):
-                candidate_formats.append(content_part[6:].strip())
-            else:
-                candidate_formats.append(content_part.split('/')[-1].strip())
-        
-        # File info from Slack event
-        if file_info:
-            mimetype = file_info.get('mimetype', '')
-            if mimetype:
-                mimetype = mimetype.lower().strip()
-                if mimetype.startswith('image/'):
-                    candidate_formats.append(mimetype[6:].strip())
-                else:
-                    candidate_formats.append(mimetype.split('/')[-1].strip())
-        
-        # URL extension
-        url_match = re.search(r'\.(png|jpg|jpeg|gif|webp)$', image_url.lower())
-        if url_match:
-            candidate_formats.append(url_match.group(1))
-        
-        normalized_format = None
-        for candidate in candidate_formats:
-            if not candidate:
-                continue
-            normalized = format_map.get(candidate.lower(), candidate.lower())
-            if normalized:
-                normalized_format = normalized
-                break
-        
-        if not normalized_format:
-            normalized_format = 'png'
-        
-        logger.info(f"Initial normalized format: {normalized_format}")
-        
-        # Convert unsupported formats to PNG using Pillow
-        if normalized_format not in supported_formats:
-            if Image is None:
-                logger.error("Pillow not installed. Cannot convert unsupported image format.")
-                return None
-            try:
-                image = Image.open(BytesIO(raw_bytes))
-                if image.mode in ("P", "RGBA", "LA"):
-                    image = image.convert("RGBA")
-                else:
-                    image = image.convert("RGB")
-                buffer = BytesIO()
-                image.save(buffer, format="PNG")
-                raw_bytes = buffer.getvalue()
-                normalized_format = "png"
-                logger.info("Converted unsupported image format to PNG using Pillow")
-            except Exception as convert_error:
-                logger.error(f"Failed to convert image to PNG: {convert_error}")
-                return None
-        
+        # Encode to base64
         image_data = base64.b64encode(raw_bytes).decode('utf-8')
-        logger.info(f"Final image format: {normalized_format}, base64 length: {len(image_data)} chars")
+        logger.info(f"Image downloaded successfully: {image_format}, {len(raw_bytes)} bytes")
         
         return {
             "data": image_data,
-            "format": normalized_format,
+            "format": image_format,
             "url": image_url
         }
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP Error downloading image: {e.response.status_code}")
+        if e.response.status_code == 403:
+            logger.error("Bot lacks 'files:read' permission")
+        return None
     except Exception as e:
         logger.error(f"Error downloading image: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         return None
 
 
@@ -768,6 +742,11 @@ Rules:
         # Use the cached full codebase context for preview
         full_codebase_context = pr_conversations[conversation_key]["codebase_context"]
         stored_image_data = pr_conversations[conversation_key].get("image_data")
+        
+        logger.info(f"🖼️ Image data in conversation: {stored_image_data is not None}")
+        if stored_image_data:
+            logger.info(f"   Image format: {stored_image_data.get('format')}")
+            logger.info(f"   Image data length: {len(stored_image_data.get('data', ''))}")
         
         # Generate changeset preview using SpoonOS with vision if image is available
         ai_result = _generate_changeset_preview(
