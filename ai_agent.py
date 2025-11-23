@@ -66,18 +66,27 @@ For EVERY file, use this format. For deletions, omit the code block:
 📄 File: path/to/delete.py [DELETED]
 
 RULES:
-- Generate COMPLETE, WORKING code (not stubs or TODOs)
+- Generate COMPLETE, WORKING, PRODUCTION-READY code (not stubs or TODOs)
+- Generate THOROUGH implementations with full functionality
+- For tests: Include COMPREHENSIVE test coverage (minimum 10-20 test cases per file)
+- For features: Include all necessary code, error handling, validation, and edge cases
 - Include proper imports and dependencies
-- Add error handling where appropriate
-- Include comments explaining key logic
-- Follow best practices and standards
+- Add clear comments explaining key logic
+- Follow best practices and industry standards
 - For MODIFIED files, provide the ENTIRE file with all existing code preserved
 - For DELETED files, just mark with [DELETED] tag
+
+IMPORTANT - File Naming:
+- Use REAL, SPECIFIC filenames based on the user's request (e.g., "auth_tests.py", "user_service.py")
+- NEVER use generic examples like "test.py", "example.py", "file.py" unless explicitly requested
+- Infer appropriate filenames from the task description
 
 DO NOT:
 - Just describe what to do without showing code
 - Say "thinking completed" or "no action needed"
 - Create plans or outlines - generate actual code immediately
+- Generate stub code or placeholder implementations
+- Use generic/example filenames when the user has a specific context
 """
 
             user_prompt = f"""USER REQUEST: {task_description}
@@ -92,6 +101,13 @@ DO NOT:
 ```language
 actual complete code here
 ```
+
+CRITICAL RULES:
+- GENERATE COMPLETE CODE for each file (no truncation!)
+- If generating multiple files, prioritize the MOST IMPORTANT ones first
+- Each file must be FULLY COMPLETE with all functionality
+- Do not start a file unless you can finish it completely
+- Better to have 1-2 complete files than 5 incomplete ones
 
 GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
 
@@ -114,11 +130,21 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=4000
+                max_tokens=16000  # Max for gpt-4o output
             )
             
             response_text = response.choices[0].message.content
+            finish_reason = response.choices[0].finish_reason
+            
             logger.info(f"OpenAI response length: {len(response_text)} chars")
+            logger.info(f"Finish reason: {finish_reason}")
+            
+            # Warn if truncated
+            if finish_reason == "length":
+                logger.warning("⚠️  Response was truncated due to max_tokens limit!")
+                logger.warning("⚠️  Last file may be incomplete. Consider breaking into smaller tasks.")
+                # Append warning to response
+                response_text += "\n\n[WARNING: Response truncated. Last file may be incomplete.]"
             
             # Parse the response directly
             logger.info("Parsing OpenAI response...")
@@ -126,12 +152,20 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             
             logger.info(f"Total files extracted: {len(files)}")
             for f in files:
-                logger.info(f"  - {f['path']}: {len(f.get('content', ''))} chars")
+                content = f.get('content', '')
+                logger.info(f"  - {f['path']}: {len(content)} chars")
+                # Check for newline issues
+                if '\\n' in content:
+                    logger.warning(f"    ⚠️  Contains escaped newlines (\\n)")
+                if '\n' in content:
+                    logger.info(f"    ✓ Contains proper newlines")
+                logger.info(f"    Preview: {content[:150]}")
             
             return {
                 "success": True,
                 "files": files,
-                "raw_response": response_text
+                "raw_response": response_text,
+                "truncated": finish_reason == "length"  # Flag if response was truncated
             }
             
         except Exception as e:
@@ -232,11 +266,25 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
                 code_stripped = code.strip()
                 tag = tag.upper()
                 
+                # Clean up any file headers that might have been captured in the code
+                # Remove patterns like "File: example.py [NEW]\n" from the content
+                code_stripped = re.sub(r'^.*?File:\s*[^\s\[]+\s*\[(?:NEW|MODIFIED|DELETED)\]\s*\n*', '', code_stripped, flags=re.MULTILINE)
+                code_stripped = code_stripped.strip()
+                
                 logger.info(f"Match {i+1}:")
                 logger.info(f"  Filepath: '{filepath}'")
                 logger.info(f"  Tag: [{tag}]")
                 logger.info(f"  Code length: {len(code_stripped)} chars")
                 logger.info(f"  Code preview: {code_stripped[:100]}...")
+                
+                # Filter out generic/example filenames that are likely AI hallucinations
+                generic_names = ['test.py', 'example.py', 'file.py', 'sample.py', 'demo.py', 
+                                'example.js', 'test.js', 'file.js', 'sample.js']
+                is_generic = any(filepath.lower().endswith(name) for name in generic_names)
+                
+                if is_generic:
+                    logger.warning(f"  ⚠️  Skipping generic/example filename: {filepath}")
+                    continue
                 
                 if filepath:
                     file_info = {
@@ -295,6 +343,10 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
                 # No filename found, use generic name
                 filename = f"generated_file_{i+1}.py"
             
+            # Clean up any file headers from the content
+            code_stripped = re.sub(r'^.*?File:\s*[^\s\[]+\s*\[(?:NEW|MODIFIED|DELETED)\]\s*\n*', '', code_stripped, flags=re.MULTILINE)
+            code_stripped = code_stripped.strip()
+            
             # Don't add duplicate paths
             if not any(f['path'] == filename for f in files):
                 files.append({
@@ -321,6 +373,10 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             for filename, code in matches:
                 filename = filename.strip()
                 code_stripped = code.strip()
+                
+                # Clean up any file headers from the content
+                code_stripped = re.sub(r'^.*?File:\s*[^\s\[]+\s*\[(?:NEW|MODIFIED|DELETED)\]\s*\n*', '', code_stripped, flags=re.MULTILINE)
+                code_stripped = code_stripped.strip()
                 
                 # Skip if already extracted
                 if code_stripped in extracted_code_contents:

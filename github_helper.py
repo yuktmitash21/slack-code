@@ -56,140 +56,193 @@ class GitHubPRHelper:
                 logger.warning(f"Failed to initialize AI generator: {e}")
                 self.use_ai = False
     
-    def _get_full_codebase_context(self, branch_name="main"):
+    def _get_full_codebase_context(self, branch_name="main", user_prompt=None):
         """
-        Fetch and read all relevant files from the repository
+        Fetch codebase context using GitHub API (fast, no cloning)
+        Intelligently selects files based on user's prompt
         
         Args:
             branch_name: Branch to read files from (default: main)
+            user_prompt: User's request to determine which files to load
             
         Returns:
-            String containing all file contents with paths
+            String containing relevant file contents
         """
         try:
-            logger.info(f"Reading full codebase from branch: {branch_name}")
+            logger.info(f"Building smart codebase context from branch: {branch_name}")
+            if user_prompt:
+                logger.info(f"User prompt: {user_prompt[:100]}...")
             
-            # Clone or fetch the repository to a temp directory
-            temp_dir = tempfile.mkdtemp()
+            # Extract keywords from user prompt for smart file selection
+            prompt_keywords = set()
+            task_type = "general"
+            
+            if user_prompt:
+                prompt_lower = user_prompt.lower()
+                
+                # Extract filename mentions (e.g., "auth.py", "user_service")
+                import re
+                explicit_files = re.findall(r'[\w_/\-]+\.[\w]+', user_prompt)
+                for f in explicit_files:
+                    prompt_keywords.add(f.lower())
+                
+                # Extract likely module/component names
+                words = re.findall(r'\b[\w_]+\b', prompt_lower)
+                for word in words:
+                    if len(word) > 3:  # Skip short words
+                        prompt_keywords.add(word)
+                
+                # Determine task type for extension priorities
+                if any(kw in prompt_lower for kw in ['test', 'unit test', 'testing', 'pytest', 'jest']):
+                    task_type = "testing"
+                elif any(kw in prompt_lower for kw in ['ui', 'frontend', 'page', 'component', 'html', 'css', 'react', 'vue']):
+                    task_type = "frontend"
+                elif any(kw in prompt_lower for kw in ['api', 'endpoint', 'route', 'handler', 'controller']):
+                    task_type = "api"
+                elif any(kw in prompt_lower for kw in ['database', 'db', 'model', 'schema', 'migration', 'sql']):
+                    task_type = "database"
+                elif any(kw in prompt_lower for kw in ['auth', 'login', 'authentication', 'authorization', 'user']):
+                    task_type = "auth"
+                
+                logger.info(f"Task type: {task_type}, Keywords: {list(prompt_keywords)[:10]}")
+            
+            # Build context using GitHub API (much faster than cloning)
+            context_parts = [
+                f"Repository: {self.repo_name}",
+                f"Branch: {branch_name}",
+                f"Language: {self.repo.language or 'Multiple'}",
+                f"Description: {self.repo.description or 'No description'}",
+                ""
+            ]
+            
+            # File extensions to include (prioritized)
+            priority_extensions = {'.py', '.js', '.jsx', '.ts', '.tsx', '.go', '.rs', '.java'}
+            secondary_extensions = {'.cpp', '.c', '.h', '.hpp', '.cs', '.rb', '.php', '.swift', '.kt', '.scala'}
+            config_extensions = {'.json', '.yaml', '.yml', '.toml', '.md', '.txt', '.sh', '.bash'}
+            
+            # Directories to skip
+            skip_dirs = {
+                'node_modules', '__pycache__', '.git', 'venv', '.venv',
+                'dist', 'build', 'target', '.idea', '.vscode', 'vendor',
+                'bin', 'obj', '.next', '.nuxt', 'coverage', 'test', 'tests',
+                '__tests__', 'spec', 'docs', '.github'
+            }
+            
+            # Get repository tree using GitHub API (fast!)
             try:
-                # Clone the repository
-                clone_url = self.repo.clone_url
-                # Use authenticated URL if possible
-                if hasattr(self, 'github') and self.github._Github__requester.auth:
-                    token = os.environ.get('GITHUB_TOKEN')
-                    if token:
-                        clone_url = clone_url.replace('https://', f'https://{token}@')
-                
-                logger.info(f"Cloning repository to {temp_dir}")
-                repo = Repo.clone_from(clone_url, temp_dir, branch=branch_name, depth=1)
-                
-                # Build context from all relevant files
-                context_parts = [f"Repository: {self.repo_name}", f"Branch: {branch_name}", ""]
-                
-                # File extensions to include (source code files)
-                include_extensions = {
-                    '.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.go', '.rs',
-                    '.cpp', '.c', '.h', '.hpp', '.cs', '.rb', '.php', '.swift',
-                    '.kt', '.scala', '.sh', '.bash', '.yaml', '.yml', '.json',
-                    '.md', '.txt', '.sql', '.r', '.m', '.lua', '.pl', '.pm'
-                }
-                
-                # Directories to skip
-                skip_dirs = {
-                    '.git', 'node_modules', 'venv', '__pycache__', '.venv',
-                    'env', 'dist', 'build', 'target', '.idea', '.vscode',
-                    'vendor', 'bin', 'obj', '.next', '.nuxt', 'coverage'
-                }
-                
-                file_count = 0
-                total_size = 0
-                max_file_size = 50 * 1024  # 50KB per file limit (reduced from 500KB)
-                max_total_tokens = 60000  # Max ~60k tokens for context (leaves room for prompt/response)
-                
-                # Collect all files first, then prioritize
-                files_to_include = []
-                
-                # Walk through the repository
-                for root, dirs, files in os.walk(temp_dir):
-                    # Filter out skip directories
-                    dirs[:] = [d for d in dirs if d not in skip_dirs]
+                tree = self.repo.get_git_tree(branch_name, recursive=True)
+            except:
+                # Fallback to default branch
+                tree = self.repo.get_git_tree(self.repo.default_branch, recursive=True)
+            
+            # Collect and score files based on relevance
+            scored_files = []
+            
+            for item in tree.tree:
+                if item.type == "blob":  # It's a file
+                    path = item.path
+                    path_lower = path.lower()
                     
-                    for filename in files:
-                        # Check file extension
-                        _, ext = os.path.splitext(filename)
-                        if ext not in include_extensions:
-                            continue
-                        
-                        filepath = os.path.join(root, filename)
-                        relative_path = os.path.relpath(filepath, temp_dir)
-                        
-                        # Skip large files
-                        try:
-                            file_size = os.path.getsize(filepath)
-                            if file_size > max_file_size:
-                                logger.debug(f"Skipping large file: {relative_path} ({file_size} bytes)")
-                                continue
-                        except OSError:
-                            continue
-                        
-                        files_to_include.append((filepath, relative_path, file_size))
-                
-                # Sort by size (smaller files first - more likely to be relevant configs/helpers)
-                files_to_include.sort(key=lambda x: x[2])
-                
-                # Add files until we hit token limit
-                estimated_tokens = 0
-                files_added = []
-                
-                for filepath, relative_path, file_size in files_to_include:
-                    # Estimate tokens (roughly 4 chars = 1 token)
-                    estimated_file_tokens = file_size // 4
+                    # Skip if in excluded directory or hidden
+                    if any(f'/{skip_dir}/' in f'/{path}/' or path.startswith(skip_dir) for skip_dir in skip_dirs):
+                        continue
+                    if path.startswith('.') and path != '.env.example':
+                        continue
                     
-                    if estimated_tokens + estimated_file_tokens > max_total_tokens:
-                        logger.info(f"Stopping at {file_count} files to stay within token limit")
-                        logger.info(f"Skipping remaining {len(files_to_include) - len(files_added)} files")
-                        break
+                    # Check file size (skip large files)
+                    if item.size and item.size > 100 * 1024:  # Skip files > 100KB
+                        continue
                     
-                    # Read file content
-                    try:
-                        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                        
-                        context_parts.append(f"--- FILE: {relative_path} ---")
-                        context_parts.append(content)
-                        context_parts.append(f"--- END FILE: {relative_path} ---")
-                        context_parts.append("")
-                        
-                        file_count += 1
-                        total_size += len(content)
-                        estimated_tokens += estimated_file_tokens
-                        files_added.append(relative_path)
-                    except Exception as e:
-                        logger.warning(f"Could not read file {relative_path}: {e}")
+                    # Calculate relevance score
+                    score = 0
+                    _, ext = os.path.splitext(path)
+                    
+                    # Base score by extension relevance
+                    if ext in priority_extensions:
+                        score += 10
+                    elif ext in secondary_extensions:
+                        score += 5
+                    elif ext in config_extensions:
+                        score += 3
+                    
+                    # Boost score based on task type
+                    if task_type == "testing" and ('test' in path_lower or 'spec' in path_lower):
+                        score += 20
+                    elif task_type == "frontend" and any(x in path_lower for x in ['component', 'page', 'view', 'ui', 'client', 'frontend']):
+                        score += 20
+                    elif task_type == "api" and any(x in path_lower for x in ['api', 'route', 'handler', 'controller', 'endpoint']):
+                        score += 20
+                    elif task_type == "database" and any(x in path_lower for x in ['model', 'schema', 'migration', 'database', 'db']):
+                        score += 20
+                    elif task_type == "auth" and any(x in path_lower for x in ['auth', 'login', 'user', 'session', 'token']):
+                        score += 20
+                    
+                    # Boost score if filename/path contains keywords from prompt
+                    if prompt_keywords:
+                        path_parts = path_lower.replace('/', ' ').replace('_', ' ').replace('-', ' ').split()
+                        matches = sum(1 for keyword in prompt_keywords if keyword in path_parts or keyword in path_lower)
+                        score += matches * 15
+                    
+                    # Always include certain key files
+                    if path in ['README.md', 'package.json', 'requirements.txt', 'setup.py']:
+                        score += 8
+                    
+                    # Prefer smaller files (usually more focused)
+                    size_penalty = (item.size or 0) // 10000  # -1 per 10KB
+                    score -= size_penalty
+                    
+                    if score > 0:
+                        scored_files.append((path, item.size or 0, score))
+            
+            # Sort by score (highest first), then by size (smaller first)
+            scored_files.sort(key=lambda x: (-x[2], x[1]))
+            
+            # Select only top 2 most relevant files for speed
+            files_to_fetch = scored_files[:2]
+            
+            logger.info(f"Top 2 most relevant files:")
+            for path, size, score in files_to_fetch:
+                logger.info(f"  {score:3d} | {path} ({size} bytes)")
+            
+            logger.info(f"Fetching {len(files_to_fetch)} files via GitHub API")
+            
+            # Fetch actual file contents (only 2 files for speed)
+            total_chars = 0
+            max_total_chars = 50000  # ~12k tokens (reduced since we only fetch 2 files)
+            files_added = 0
+            
+            for filepath, size, score in files_to_fetch:
+                # Stop if we're approaching token limit
+                if total_chars > max_total_chars:
+                    logger.info(f"Reached token limit, stopping at {files_added} files")
+                    break
                 
-                logger.info(f"Read {file_count} files, total {total_size} characters (~{estimated_tokens} tokens)")
-                
-                # Build final context
-                full_context = "\n".join(context_parts)
-                
-                # Final safety check: truncate if still too large
-                max_context_chars = max_total_tokens * 4  # Conservative: 4 chars per token
-                if len(full_context) > max_context_chars:
-                    logger.warning(f"Context still too large ({len(full_context)} chars), truncating to {max_context_chars}")
-                    full_context = full_context[:max_context_chars] + "\n\n[... context truncated to fit token limit ...]"
-                
-                return full_context
-                
-            finally:
-                # Clean up temp directory
                 try:
-                    shutil.rmtree(temp_dir)
+                    file_content = self.repo.get_contents(filepath, ref=branch_name)
+                    content = file_content.decoded_content.decode('utf-8', errors='ignore')
+                    
+                    # Add to context
+                    context_parts.append(f"--- FILE: {filepath} ---")
+                    context_parts.append(content)
+                    context_parts.append(f"--- END FILE: {filepath} ---")
+                    context_parts.append("")
+                    
+                    total_chars += len(content)
+                    files_added += 1
+                    
                 except Exception as e:
-                    logger.warning(f"Could not clean up temp dir {temp_dir}: {e}")
+                    logger.debug(f"Could not read {filepath}: {e}")
+                    continue
+            
+            full_context = "\n".join(context_parts)
+            
+            logger.info(f"Built context: {files_added} files, {total_chars} chars (~{total_chars // 4} tokens)")
+            
+            return full_context
         
         except Exception as e:
             logger.error(f"Error getting codebase context: {e}")
-            return f"Repository: {self.repo_name}\n\nError reading codebase: {str(e)}"
+            return f"Repository: {self.repo_name}\nBranch: {branch_name}\n\nError reading structure: {str(e)}"
         
     def _generate_branch_name(self, task_description, thread_context=None):
         """
@@ -627,7 +680,17 @@ IMPORTANT: You have access to ALL existing files above.
                 file_desc = file_info.get("description", "AI-generated code")
                 file_action = file_info.get("action", "NEW").upper()
                 
+                # Fix escaped newlines if they exist (\\n -> \n)
+                # This handles cases where the AI output has literal \n strings
+                if isinstance(file_content, str):
+                    # Only replace if we detect escaped newlines
+                    if '\\n' in file_content and '\n' not in file_content:
+                        file_content = file_content.replace('\\n', '\n')
+                        logger.info(f"  Fixed escaped newlines in {file_path}")
+                
                 logger.info(f"File {i+1}/{len(result['files'])}: {file_path} [{file_action}]")
+                logger.info(f"  Content length: {len(file_content)} chars")
+                logger.info(f"  Content preview (first 200 chars): {file_content[:200]}")
                 
                 try:
                     # Handle file deletion
@@ -1084,7 +1147,18 @@ Currently, this PR demonstrates the bot's ability to:
                         m=1, 
                         no_commit=True
                     )
-                    # Manually commit
+                    
+                    # Check if there are any changes to commit
+                    status = local_repo.git.status('--porcelain')
+                    if not status.strip():
+                        # No changes to commit - the revert had no effect
+                        logger.warning(f"Revert had no effect - nothing to commit")
+                        return {
+                            "success": False,
+                            "error": f"PR #{pr_number} cannot be reverted - no changes were made. The PR may be empty or already reverted."
+                        }
+                    
+                    # Manually commit the changes
                     local_repo.git.commit(
                         '-m', 
                         f"Revert PR #{pr_number}: {original_pr.title}\n\nThis reverts pull request #{pr_number}."

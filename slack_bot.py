@@ -77,12 +77,22 @@ The user can refine these changes through conversation before creating the PR.
         # Get the raw response and parsed files
         raw_response = result.get("raw_response", "")
         parsed_files = result.get("files", [])
+        was_truncated = result.get("truncated", False)
         
         logger.info(f"SpoonOS preview generated: {len(parsed_files)} file(s)")
         
+        if was_truncated:
+            logger.warning("⚠️  AI response was truncated during preview generation")
+        
         # Format the response as a changeset for Slack with GitHub-style diff
         if parsed_files:
-            formatted_response = "📝 PROPOSED CHANGESET\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            formatted_response = ""
+            
+            # Add truncation warning at the top if needed
+            if was_truncated:
+                formatted_response += "⚠️ **WARNING**: Response truncated - last file may be incomplete. Consider smaller tasks.\n\n"
+            
+            formatted_response += "📝 PROPOSED CHANGESET\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             
             for file_info in parsed_files:
                 filepath = file_info.get("path", "unknown")
@@ -135,7 +145,8 @@ The user can refine these changes through conversation before creating the PR.
         return {
             "success": True,
             "raw_response": formatted_response,
-            "parsed_files": parsed_files  # Cache these for PR creation!
+            "parsed_files": parsed_files,  # Cache these for PR creation!
+            "truncated": was_truncated  # Flag if response was truncated
         }
         
     except Exception as e:
@@ -520,10 +531,10 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
                 thread_ts=thread_ts
             )
             
-            # Fetch codebase context for deletion verification
+            # Fetch codebase context for deletion verification (with user prompt for smart loading)
             try:
                 default_branch = github_helper.repo.default_branch
-                codebase_context = github_helper._get_full_codebase_context(default_branch)
+                codebase_context = github_helper._get_full_codebase_context(default_branch, user_prompt=message_text)
             except Exception as e:
                 logger.error(f"Error fetching codebase context for deletion: {e}")
                 codebase_context = None
@@ -629,9 +640,11 @@ def handle_pr_conversation(user_id, message_text, say, thread_ts, client=None, c
                 thread_ts=thread_ts
             )
             try:
-                # Get the default branch
+                # Get the default branch and fetch smart context based on user's task
                 default_branch = github_helper.repo.default_branch
-                codebase_context = github_helper._get_full_codebase_context(default_branch)
+                # Use the initial task for smart file selection
+                user_task = pr_conversations[conversation_key].get("initial_task", message_text)
+                codebase_context = github_helper._get_full_codebase_context(default_branch, user_prompt=user_task)
                 pr_conversations[conversation_key]["codebase_context"] = codebase_context
                 logger.info(f"Codebase context cached: {len(codebase_context)} chars")
             except Exception as e:
@@ -707,8 +720,14 @@ Rules:
         
         ai_response = ai_result.get("raw_response", "")
         parsed_files = ai_result.get("parsed_files", [])
+        was_truncated = ai_result.get("truncated", False)
         
         logger.info(f"Caching {len(parsed_files)} parsed files for PR creation")
+        
+        # Warn user if response was truncated
+        if was_truncated:
+            logger.warning("⚠️  AI response was truncated - last file may be incomplete")
+            ai_response = "⚠️ **WARNING**: Response was truncated due to length. Last file may be incomplete. Consider breaking this into smaller tasks.\n\n" + ai_response
         
         # Store AI response AND parsed files (for PR creation)
         pr_conversations[conversation_key]["messages"].append({
@@ -820,6 +839,11 @@ Rules:
 def _send_pr_result(result, task_description, say, thread_ts, user_id):
     """Helper to send PR creation result"""
     try:
+        logger.info(f"=== _send_pr_result called ===")
+        logger.info(f"Result: {result}")
+        logger.info(f"Task: {task_description}")
+        logger.info(f"User ID: {user_id}")
+        
         if not isinstance(result, dict):
             raise ValueError(f"Invalid result type: {type(result)}")
         
@@ -829,6 +853,8 @@ def _send_pr_result(result, task_description, say, thread_ts, user_id):
             branch_name = result.get('branch_name', 'N/A')
             pr_url = result.get('pr_url', 'N/A')
             changes = result.get('changes', 'No changes listed')
+            
+            logger.info(f"PR Number: {pr_number} (type: {type(pr_number)})")
             
             response = f"""✅ *Pull Request Created Successfully!*
 
@@ -841,8 +867,46 @@ def _send_pr_result(result, task_description, say, thread_ts, user_id):
 
 The PR is ready for review! 🎉"""
 
-            if pr_number != 'N/A':
-                response += f"\n\n💡 *Tip:* You can merge it with `@bot merge PR {pr_number}`"
+            # Add merge button if PR was created successfully
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": response
+                    }
+                }
+            ]
+            
+            # Add merge button if we have a valid PR number
+            if pr_number and pr_number != 'N/A' and pr_number != 'None':
+                logger.info(f"Adding Merge PR button for PR #{pr_number}")
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "🔀 Merge PR",
+                                "emoji": True
+                            },
+                            "style": "primary",
+                            "value": f"merge_pr_{pr_number}",
+                            "action_id": f"merge_pr_button_{pr_number}"
+                        }
+                    ]
+                })
+                logger.info(f"Blocks with button: {blocks}")
+            else:
+                logger.warning(f"Not adding Merge button - invalid PR number: {pr_number}")
+            
+            say(
+                text=response,  # Fallback text
+                blocks=blocks,
+                thread_ts=thread_ts
+            )
+            logger.info(f"Sent PR result message with {len(blocks)} blocks")
         else:
             error_msg = result.get('error', 'Unknown error occurred')
             response = f"""❌ *Failed to Create Pull Request*
@@ -852,11 +916,11 @@ The PR is ready for review! 🎉"""
 
 Please check the logs and try again.
 """
-        
-        say(
-            text=response,
-            thread_ts=thread_ts
-        )
+            
+            say(
+                text=response,
+                thread_ts=thread_ts
+            )
     except Exception as e:
         logger.error(f"Error sending PR result: {e}, result: {result}")
         error_msg = str(e) if str(e) else "Unknown error occurred"
@@ -902,10 +966,40 @@ def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
 🔀 *Merge Method:* {result['merge_method']}
 🔗 *URL:* {result['pr_url']}
 
-The changes have been merged to master! 🎉
-
-💡 *Tip:* If you need to undo this, use `@bot unmerge PR {result['pr_number']}`
-"""
+The changes have been merged to master! 🎉"""
+        
+        # Add unmerge button
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": response
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "↩️ Unmerge PR",
+                            "emoji": True
+                        },
+                        "style": "danger",
+                        "value": f"unmerge_pr_{result['pr_number']}",
+                        "action_id": f"unmerge_pr_button_{result['pr_number']}"
+                    }
+                ]
+            }
+        ]
+        
+        say(
+            text=response,  # Fallback text
+            blocks=blocks,
+            thread_ts=thread_ts
+        )
     else:
         response = f"""❌ *Failed to Merge Pull Request*
 
@@ -914,11 +1008,11 @@ The changes have been merged to master! 🎉
 
 Please check the PR status and try again, or merge it manually on GitHub.
 """
-    
-    say(
-        text=response,
-        thread_ts=thread_ts
-    )
+        
+        say(
+            text=response,
+            thread_ts=thread_ts
+        )
 
 
 def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
@@ -959,10 +1053,40 @@ def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
 🌿 *Branch:* `{result['revert_branch_name']}`
 🔗 *URL:* {result['revert_pr_url']}
 
-The revert PR is ready for review! You can now merge it to undo the original changes.
-
-💡 *Tip:* Merge it with `@bot merge PR {result['revert_pr_number']}`
-"""
+The revert PR is ready for review! You can now merge it to undo the original changes."""
+        
+        # Add merge button for the revert PR
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": response
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "🔀 Merge Revert PR",
+                            "emoji": True
+                        },
+                        "style": "primary",
+                        "value": f"merge_pr_{result['revert_pr_number']}",
+                        "action_id": f"merge_pr_button_{result['revert_pr_number']}"
+                    }
+                ]
+            }
+        ]
+        
+        say(
+            text=response,  # Fallback text
+            blocks=blocks,
+            thread_ts=thread_ts
+        )
     else:
         response = f"""❌ *Failed to Create Revert PR*
 
@@ -971,11 +1095,11 @@ The revert PR is ready for review! You can now merge it to undo the original cha
 
 Note: You can only revert PRs that have been merged.
 """
-    
-    say(
-        text=response,
-        thread_ts=thread_ts
-    )
+        
+        say(
+            text=response,
+            thread_ts=thread_ts
+        )
 
 
 @app.event("app_mention")
@@ -1021,10 +1145,12 @@ def handle_app_mention(event, client, say, logger):
         # Use AI-powered command classification
         command = classify_command(message_text)
         
-        if command["command"] == "CREATE_PR":
-            task_description = command.get("task_description", "No specific task description provided")
-            logger.info(f"🤖 AI detected CREATE_PR command: {task_description}")
-            handle_pr_conversation(user_id, task_description, say, thread_ts, client, channel_id, is_initial=True, image_data=image_data)
+        # Treat CREATE_PR and REFINE identically - both start PR conversations
+        if command["command"] in ["CREATE_PR", "REFINE"]:
+            # Extract task description (for CREATE_PR) or use the message as-is (for REFINE)
+            task_description = command.get("task_description", message_text)
+            logger.info(f"🤖 AI detected {command['command']} command: {task_description}")
+            handle_pr_conversation(user_id, task_description, say, thread_ts, client, channel_id, is_initial=True)
             return
         
         elif command["command"] == "MERGE_PR":
@@ -1040,45 +1166,90 @@ def handle_app_mention(event, client, say, logger):
             handle_pr_unmerge(user_id, pr_number, say, thread_ts)
             return
         
-        # Regular context response
-        # Gather context from the channel
-        channel_context = get_channel_context(client, channel_id, limit=50)
+        # GENERAL command - answer the question intelligently
+        logger.info(f"🤖 Handling GENERAL command: {message_text}")
         
-        # If in a thread, also get thread context
-        thread_context = []
-        if thread_ts and thread_ts != event.get("ts"):
-            thread_context = get_thread_context(client, channel_id, thread_ts)
-        
-        # Build context summary
-        context_summary = []
-        
-        if thread_context and len(thread_context) > 1:
-            context_summary.append("📝 *Thread Context:*")
-            # Show last 10 messages from thread
-            for msg in thread_context[-10:]:
-                context_summary.append(f"  {msg}")
-            context_summary.append("")
-        
-        context_summary.append("📚 *Recent Channel Messages:*")
-        # Show last 30 messages from channel
-        for msg in channel_context[-30:]:
-            context_summary.append(f"  {msg}")
-        
-        # Create response with help text
-        response = f"Hi <@{user_id}>! I've been mentioned and I have context from the channel.\n\n"
-        response += f"*Your message:* {message_text}\n\n"
-        response += "\n".join(context_summary)
-        response += f"\n\n_I have access to the last {len(channel_context)} messages from this channel"
-        if thread_context:
-            response += f" and {len(thread_context)} messages from this thread"
-        response += "._"
-        
-        # Add GitHub PR help if enabled
-        if github_helper:
-            response += "\n\n💡 *Tips:*"
-            response += "\n• Create a PR: `create a PR for [task description]`"
-            response += "\n• Merge a PR: `merge PR [number]`"
-            response += "\n• Revert a PR: `unmerge PR [number]`"
+        # Use AI to generate a helpful response
+        try:
+            import openai
+            
+            client_openai = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            
+            # Build context about what the bot can do
+            bot_capabilities = """You are a helpful Slack bot. Here's what you can do:
+
+🤖 **What I Can Do:**
+
+1. **Write Code for You** - I generate actual code using AI
+   - I have full access to your codebase
+   - I understand your existing code and can modify it
+   - I show you changesets before creating PRs
+   - You can iterate: "add tests", "use one file", etc.
+
+2. **Create PRs** - Turn code changes into pull requests
+   - Say: "create a PR to add login page"
+   - I'll show you the code, you can refine it
+   - Then: click "Make PR" button or say "make pr"
+
+3. **Merge PRs** - Merge pull requests to main
+   - Say: "merge PR 123"
+   - Options: "merge PR 123 with squash" or "using rebase"
+
+4. **Unmerge PRs** - Revert merged pull requests
+   - Say: "revert PR 123" or "unmerge PR 45"
+
+I understand natural language and use AI for everything!"""
+
+            response_ai = client_openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"""You are a helpful Slack bot assistant. Answer the user's question in a friendly way.
+
+{bot_capabilities}
+
+IMPORTANT: Always include a brief mention of your capabilities in your response, even for casual questions like "how are you" or "hello". 
+
+For example:
+- "How are you?" → "I'm doing great! I'm here to help you write code and manage PRs. I can create PRs, merge them, or revert them. What can I help you build today?"
+- "Hello" → "Hey there! 👋 I'm a bot that writes code for you and manages GitHub PRs. Need help creating something?"
+- "What's up?" → "Not much! Ready to help you with code. I can create PRs, merge them, and even revert changes. What are you working on?"
+
+Always be conversational but make sure to highlight what you can do. Use Slack markdown formatting."""
+                    },
+                    {
+                        "role": "user",
+                        "content": message_text
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            response = f"<@{user_id}> {response_ai.choices[0].message.content}"
+            
+        except Exception as e:
+            logger.error(f"Error generating AI response: {e}")
+            # Fallback to simple help text
+            response = f"""Hi <@{user_id}>! 🤖
+
+*What I Can Do:*
+
+📝 **Write Code for You**
+• I generate actual code using AI
+• I understand your codebase
+
+🚀 **Create PRs**
+• `create a PR to add login page`
+
+✅ **Merge PRs**
+• `merge PR 123`
+
+↩️ **Unmerge PRs**
+• `revert PR 45`
+
+Try: "create a PR for [your idea]" and I'll show you the code!"""
         
         # Send response in the same thread if applicable
         say(
@@ -1167,22 +1338,57 @@ def handle_make_pr_button_click(ack, body, client, logger):
             cached_files=cached_files  # Use cached result from preview!
         )
         
-        # Send result
+        # Send result with merge button
         if result["success"]:
+            pr_number = result.get('pr_number')
             response = f"""<@{stored_user_id}> ✅ *Pull Request Created Successfully!*
 
 📋 *Task:* {conv['initial_task']}
-🔢 *PR #:* {result['pr_number']}
+🔢 *PR #:* {pr_number}
 🌿 *Branch:* `{result['branch_name']}`
 🔗 *URL:* {result['pr_url']}
 
 **Changes Made:**
 {result.get('changes', 'See PR for details')}
 
-You can now review and merge the PR!
+You can now review and merge the PR!"""
 
-💡 *Tip:* Merge it with `@bot merge PR {result['pr_number']}`
-"""
+            # Add merge button
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": response
+                    }
+                }
+            ]
+            
+            if pr_number:
+                blocks.append({
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "🔀 Merge PR",
+                                "emoji": True
+                            },
+                            "style": "primary",
+                            "value": f"merge_pr_{pr_number}",
+                            "action_id": f"merge_pr_button_{pr_number}"
+                        }
+                    ]
+                })
+                logger.info(f"Added Merge PR button for PR #{pr_number} in button handler")
+            
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=response,
+                blocks=blocks
+            )
         else:
             response = f"""<@{stored_user_id}> ❌ *Failed to Create Pull Request*
 
@@ -1191,12 +1397,12 @@ You can now review and merge the PR!
 
 Please try again or check the logs for details.
 """
-        
-        client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=response
-        )
+            
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=response
+            )
         
         # Clean up the conversation
         del pr_conversations[thread_ts]
@@ -1209,6 +1415,104 @@ Please try again or check the logs for details.
                 channel=body["channel"]["id"],
                 thread_ts=body["actions"][0]["value"],
                 text=f"❌ Error creating PR: {str(e)}"
+            )
+        except:
+            pass
+
+
+@app.action(re.compile("^merge_pr_button_.*"))
+def handle_merge_pr_button_click(ack, body, client, say, logger):
+    """
+    Handle the Merge PR button click
+    """
+    ack()  # Acknowledge the action
+    
+    try:
+        user_id = body["user"]["id"]
+        action_value = body["actions"][0]["value"]
+        channel_id = body["channel"]["id"]
+        message_ts = body["message"]["ts"]
+        thread_ts = body["message"].get("thread_ts", message_ts)
+        
+        # Extract PR number from action value (format: "merge_pr_{pr_number}")
+        pr_number = action_value.replace("merge_pr_", "")
+        
+        logger.info(f"Merge PR button clicked by {user_id} for PR #{pr_number}")
+        
+        # Send acknowledgment
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=f"<@{user_id}> 🔀 Merging PR #{pr_number}..."
+        )
+        
+        # Use the existing merge function with default merge method
+        def say_wrapper(text=None, thread_ts=None, blocks=None):
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+                blocks=blocks
+            )
+        
+        handle_pr_merge(user_id, pr_number, "merge", say_wrapper, thread_ts)
+        
+    except Exception as e:
+        logger.error(f"Error handling Merge PR button: {e}")
+        try:
+            client.chat_postMessage(
+                channel=body["channel"]["id"],
+                thread_ts=body["message"].get("thread_ts", body["message"]["ts"]),
+                text=f"<@{user_id}> ❌ Error merging PR: {str(e)}"
+            )
+        except:
+            pass
+
+
+@app.action(re.compile("^unmerge_pr_button_.*"))
+def handle_unmerge_pr_button_click(ack, body, client, say, logger):
+    """
+    Handle the Unmerge PR button click
+    """
+    ack()  # Acknowledge the action
+    
+    try:
+        user_id = body["user"]["id"]
+        action_value = body["actions"][0]["value"]
+        channel_id = body["channel"]["id"]
+        message_ts = body["message"]["ts"]
+        thread_ts = body["message"].get("thread_ts", message_ts)
+        
+        # Extract PR number from action value (format: "unmerge_pr_{pr_number}")
+        pr_number = action_value.replace("unmerge_pr_", "")
+        
+        logger.info(f"Unmerge PR button clicked by {user_id} for PR #{pr_number}")
+        
+        # Send acknowledgment
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=f"<@{user_id}> ↩️ Creating revert PR for #{pr_number}..."
+        )
+        
+        # Use the existing unmerge function
+        def say_wrapper(text=None, thread_ts=None, blocks=None):
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+                blocks=blocks
+            )
+        
+        handle_pr_unmerge(user_id, pr_number, say_wrapper, thread_ts)
+        
+    except Exception as e:
+        logger.error(f"Error handling Unmerge PR button: {e}")
+        try:
+            client.chat_postMessage(
+                channel=body["channel"]["id"],
+                thread_ts=body["message"].get("thread_ts", body["message"]["ts"]),
+                text=f"<@{user_id}> ❌ Error unmerging PR: {str(e)}"
             )
         except:
             pass

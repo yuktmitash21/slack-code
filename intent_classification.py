@@ -146,24 +146,25 @@ def classify_command(message_text: str) -> Dict:
 
 Classify user commands into these categories and extract parameters:
 
-1. CREATE_PR - User wants to create a new pull request
+1. CREATE_PR - User explicitly asks to create a pull request with specific task
    Examples: "create a PR to add login", "make pr for auth feature"
    Extract: task_description
 
-2. MERGE_PR - User wants to merge an existing PR
+2. REFINE - User describes a coding task without explicitly saying "PR" (treated same as CREATE_PR)
+   Examples: "add a login page", "create authentication", "add tests", "make it faster"
+   This is for any request to write/modify code
+   No extraction needed (the whole message is the task)
+
+3. MERGE_PR - User wants to merge an existing PR
    Examples: "merge PR 123", "merge #45 using squash", "merge 12"
    Extract: pr_number (just the number), merge_method ("merge", "squash", or "rebase")
 
-3. REVERT_PR - User wants to revert/undo a merged PR
+4. REVERT_PR - User wants to revert/undo a merged PR
    Examples: "revert PR 123", "unmerge #45", "revert 12"
    Extract: pr_number (just the number)
 
-4. REFINE - User wants to refine/iterate on current changeset (in conversation)
-   Examples: "add tests", "do it in one file", "make it faster"
-   No parameters needed
-
-5. GENERAL - General question or conversation
-   Examples: "what can you do?", "help", "show me the docs"
+5. GENERAL - General question or conversation (NOT a coding task)
+   Examples: "what can you do?", "help", "hello", "how are you"
    No parameters needed
 
 Respond with ONLY valid JSON in this format:
@@ -176,11 +177,14 @@ Respond with ONLY valid JSON in this format:
 
 Examples:
 "create a PR to add login page" → {"command": "CREATE_PR", "task_description": "add login page"}
+"add a login page" → {"command": "REFINE"}
+"create authentication system" → {"command": "REFINE"}
+"add error handling" → {"command": "REFINE"}
 "merge PR 123" → {"command": "MERGE_PR", "pr_number": "123", "merge_method": "merge"}
 "merge #45 with squash" → {"command": "MERGE_PR", "pr_number": "45", "merge_method": "squash"}
 "revert PR 12" → {"command": "REVERT_PR", "pr_number": "12"}
-"add error handling" → {"command": "REFINE"}
-"what can you do?" → {"command": "GENERAL"}"""
+"what can you do?" → {"command": "GENERAL"}
+"hello" → {"command": "GENERAL"}"""
                 },
                 {
                     "role": "user",
