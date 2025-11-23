@@ -11,7 +11,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
 from github_helper import GitHubPRHelper
-from intent_classification import is_ready_to_create_pr
+from intent_classification import is_ready_to_create_pr, classify_command
 
 # Load environment variables
 load_dotenv()
@@ -318,108 +318,7 @@ def get_thread_context(client, channel_id, thread_ts):
         return []
 
 
-def detect_pr_command(message_text):
-    """
-    Detect if the message contains a PR creation command
-    
-    Returns:
-        dict with 'is_pr_command' and 'task_description' or None
-    """
-    # Remove bot mention from text
-    clean_text = re.sub(r'<@[A-Z0-9]+>', '', message_text).strip()
-    
-    # Check for PR-related keywords
-    pr_keywords = [
-        r'create\s+(?:a\s+)?(?:pull\s+request|pr)',
-        r'make\s+(?:a\s+)?(?:pull\s+request|pr)',
-        r'open\s+(?:a\s+)?(?:pull\s+request|pr)',
-        r'submit\s+(?:a\s+)?(?:pull\s+request|pr)',
-        r'generate\s+(?:a\s+)?(?:pull\s+request|pr)',
-    ]
-    
-    for pattern in pr_keywords:
-        match = re.search(pattern, clean_text, re.IGNORECASE)
-        if match:
-            # Extract task description (everything after the command)
-            task_description = clean_text[match.end():].strip()
-            
-            # Also look for "for" or "to" followed by description
-            for_match = re.search(r'(?:for|to)\s+(.+)', task_description, re.IGNORECASE)
-            if for_match:
-                task_description = for_match.group(1).strip()
-            
-            return {
-                'is_pr_command': True,
-                'task_description': task_description or "No specific task description provided"
-            }
-    
-    return {'is_pr_command': False}
-
-
-def detect_merge_command(message_text):
-    """
-    Detect if the message contains a merge PR command
-    
-    Returns:
-        dict with 'is_merge_command', 'pr_number', and 'merge_method'
-    """
-    # Remove bot mention from text
-    clean_text = re.sub(r'<@[A-Z0-9]+>', '', message_text).strip()
-    
-    # Check for merge-related keywords with PR number
-    merge_patterns = [
-        r'merge\s+(?:pr|pull\s+request|#)\s*(\d+)',
-        r'merge\s+(\d+)',
-    ]
-    
-    for pattern in merge_patterns:
-        match = re.search(pattern, clean_text, re.IGNORECASE)
-        if match:
-            pr_number = match.group(1)
-            
-            # Check for merge method
-            merge_method = "merge"  # default
-            if re.search(r'\bsquash\b', clean_text, re.IGNORECASE):
-                merge_method = "squash"
-            elif re.search(r'\brebase\b', clean_text, re.IGNORECASE):
-                merge_method = "rebase"
-            
-            return {
-                'is_merge_command': True,
-                'pr_number': pr_number,
-                'merge_method': merge_method
-            }
-    
-    return {'is_merge_command': False}
-
-
-def detect_unmerge_command(message_text):
-    """
-    Detect if the message contains an unmerge/revert PR command
-    
-    Returns:
-        dict with 'is_unmerge_command' and 'pr_number'
-    """
-    # Remove bot mention from text
-    clean_text = re.sub(r'<@[A-Z0-9]+>', '', message_text).strip()
-    
-    # Check for unmerge/revert-related keywords with PR number
-    unmerge_patterns = [
-        r'(?:unmerge|revert)\s+(?:pr|pull\s+request|#)\s*(\d+)',
-        r'(?:unmerge|revert)\s+(\d+)',
-    ]
-    
-    for pattern in unmerge_patterns:
-        match = re.search(pattern, clean_text, re.IGNORECASE)
-        if match:
-            pr_number = match.group(1)
-            
-            return {
-                'is_unmerge_command': True,
-                'pr_number': pr_number
-            }
-    
-    return {'is_unmerge_command': False}
+# Old command detection functions removed - now using AI-powered classify_command() from intent_classification.py
 
 
 def is_ai_asking_question(response_text):
@@ -963,34 +862,32 @@ def handle_app_mention(event, client, say, logger):
         user_info = client.users_info(user=user_id)
         username = user_info["user"]["real_name"] or user_info["user"]["name"]
         
-        # Check if this is a PR creation command
-        pr_check = detect_pr_command(message_text)
-        
-        if pr_check['is_pr_command']:
-            logger.info(f"PR conversation started: {pr_check['task_description']}")
-            handle_pr_conversation(user_id, pr_check['task_description'], say, thread_ts, client, channel_id, is_initial=True)
-            return
-        
-        # Check if this is a continuation of a PR conversation
+        # Check if this is a continuation of a PR conversation first
         if thread_ts in pr_conversations:
             logger.info(f"Continuing PR conversation in thread {thread_ts}")
             handle_pr_conversation(user_id, message_text, say, thread_ts, client, channel_id, is_initial=False)
             return
         
-        # Check if this is a merge PR command
-        merge_check = detect_merge_command(message_text)
+        # Use AI-powered command classification
+        command = classify_command(message_text)
         
-        if merge_check['is_merge_command']:
-            logger.info(f"PR merge requested: PR #{merge_check['pr_number']} using {merge_check['merge_method']}")
-            handle_pr_merge(user_id, merge_check['pr_number'], merge_check['merge_method'], say, thread_ts)
+        if command["command"] == "CREATE_PR":
+            task_description = command.get("task_description", "No specific task description provided")
+            logger.info(f"🤖 AI detected CREATE_PR command: {task_description}")
+            handle_pr_conversation(user_id, task_description, say, thread_ts, client, channel_id, is_initial=True)
             return
         
-        # Check if this is an unmerge/revert PR command
-        unmerge_check = detect_unmerge_command(message_text)
+        elif command["command"] == "MERGE_PR":
+            pr_number = command.get("pr_number")
+            merge_method = command.get("merge_method", "merge")
+            logger.info(f"🤖 AI detected MERGE_PR command: PR #{pr_number} using {merge_method}")
+            handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts)
+            return
         
-        if unmerge_check['is_unmerge_command']:
-            logger.info(f"PR revert requested: PR #{unmerge_check['pr_number']}")
-            handle_pr_unmerge(user_id, unmerge_check['pr_number'], say, thread_ts)
+        elif command["command"] == "REVERT_PR":
+            pr_number = command.get("pr_number")
+            logger.info(f"🤖 AI detected REVERT_PR command: PR #{pr_number}")
+            handle_pr_unmerge(user_id, pr_number, say, thread_ts)
             return
         
         # Regular context response
