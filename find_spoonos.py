@@ -6,13 +6,20 @@ Script to help find and test SpoonOS installation
 import sys
 import subprocess
 import importlib.util
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def test_import(module_name):
     """Test if a module can be imported"""
     try:
         __import__(module_name)
+        logger.info(f"Module {module_name} is importable")
         return True
     except ImportError:
+        logger.warning(f"Module {module_name} is not importable")
         return False
 
 def try_pip_install(package_name):
@@ -23,33 +30,31 @@ def try_pip_install(package_name):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        logger.info(f"Successfully installed {package_name}")
         return True
     except:
+        logger.error(f"Failed to install {package_name}")
         return False
 
-print("🔍 Searching for SpoonOS installation methods...")
-print("=" * 60)
-print()
+logger.info("🔍 Searching for SpoonOS installation methods...")
 
 # Test if already installed
-print("1️⃣ Checking if SpoonOS is already installed...")
+logger.info("1️⃣ Checking if SpoonOS is already installed...")
 if test_import('spoon_ai'):
-    print("✅ SpoonOS (spoon_ai) is already installed!")
+    logger.info("✅ SpoonOS (spoon_ai) is already installed!")
     try:
         from spoon_ai.agents.toolcall import ToolCallAgent
-        print("✅ Can import ToolCallAgent")
+        logger.info("✅ Can import ToolCallAgent")
         from spoon_ai.chat import ChatBot
-        print("✅ Can import ChatBot")
-        print()
-        print("🎉 SpoonOS is working! You're all set!")
+        logger.info("✅ Can import ChatBot")
+        logger.info("🎉 SpoonOS is working! You're all set!")
         sys.exit(0)
     except ImportError as e:
-        print(f"⚠️ SpoonOS found but incomplete: {e}")
+        logger.warning(f"⚠️ SpoonOS found but incomplete: {e}")
 else:
-    print("❌ SpoonOS not currently installed")
+    logger.error("❌ SpoonOS not currently installed")
 
-print()
-print("2️⃣ Trying possible PyPI package names...")
+logger.info("2️⃣ Trying possible PyPI package names...")
 
 # Try different PyPI package names
 pypi_names = [
@@ -61,16 +66,15 @@ pypi_names = [
 ]
 
 for name in pypi_names:
-    print(f"   Trying: pip install {name}")
+    logger.info(f"   Trying: pip install {name}")
     if try_pip_install(name):
         if test_import('spoon_ai'):
-            print(f"✅ SUCCESS! Installed via: pip install {name}")
+            logger.info(f"✅ SUCCESS! Installed via: pip install {name}")
             sys.exit(0)
 
-print("❌ Could not install from PyPI")
-print()
+logger.error("❌ Could not install from PyPI")
 
-print("3️⃣ Trying GitHub repositories...")
+logger.info("3️⃣ Trying GitHub repositories...")
 
 # Try different GitHub URLs
 github_urls = [
@@ -83,36 +87,13 @@ github_urls = [
 ]
 
 for url in github_urls:
-    print(f"   Trying: {url}")
+    logger.info(f"   Trying: {url}")
     if try_pip_install(url):
         if test_import('spoon_ai'):
-            print(f"✅ SUCCESS! Installed from: {url}")
+            logger.info(f"✅ SUCCESS! Installed from: {url}")
             sys.exit(0)
 
-print("❌ Could not install from GitHub")
-print()
+logger.error("❌ Could not install from GitHub")
 
-print("=" * 60)
-print("⚠️  SPOONOS NOT FOUND")
-print("=" * 60)
-print()
-print("Possible solutions:")
-print()
-print("1. Check the official documentation:")
-print("   https://xspoonai.github.io/docs/getting-started/installation/")
-print()
-print("2. Contact XSpoonAi support:")
-print("   - GitHub: https://github.com/xspoonai")
-print("   - Check if they have a Discord or support channel")
-print()
-print("3. SpoonOS might be in private beta:")
-print("   - You may need to request access")
-print("   - Check if you need an invitation")
-print()
-print("4. Alternative: Disable AI and use placeholder mode:")
-print("   - Set USE_AI_CODE_GENERATION=false in .env")
-print("   - Bot will work without AI code generation")
-print()
-
+logger.warning("⚠️  SPOONOS NOT FOUND")
 sys.exit(1)
-

@@ -9,8 +9,9 @@ import os
 import logging
 import re
 
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 
 def classify_user_intent(message_text: str) -> str:
     """
@@ -109,4 +110,3 @@ def is_ready_to_create_pr(message_text: str) -> bool:
     """
     intent = classify_user_intent(message_text)
     return intent == "SUBMIT"
-
