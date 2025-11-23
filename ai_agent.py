@@ -439,10 +439,21 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
         """
         Generate code using OpenAI Vision API with enhanced wireframe matching prompts
         
+        Implements OS-level caching using (filename + full conversation history) as cache key.
+        Cache is stored in .cache/vision_responses/ directory.
+        
+        For multi-turn conversations, each conversation state gets its own cache entry:
+        - Turn 1: cached as SHA256(filename + "user: create page")
+        - Turn 2: cached as SHA256(filename + "user: create page\nassistant: ...\nuser: add button")
+        - Turn 3: cached as SHA256(filename + "user: create page\nassistant: ...\nuser: add button\nassistant: ...\nuser: bigger")
+        
+        This ensures exact conversation paths are cached, avoiding redundant API calls
+        for identical interaction sequences.
+        
         Args:
-            prompt: Task description
+            prompt: Task description (includes full conversation history for multi-turn)
             context: Repository context
-            image_data: Dict with base64 encoded image
+            image_data: Dict with base64 encoded image (must include 'filename' key)
             
         Returns:
             dict with generated code files
@@ -450,6 +461,45 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
         try:
             import openai
             import base64 as b64
+            import hashlib
+            import json
+            from pathlib import Path
+            
+            # Setup cache directory at OS level
+            cache_dir = Path(".cache/vision_responses")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate cache key from filename + user message ONLY (ignore codebase context)
+            # This ensures cache hits even if codebase context changes slightly
+            filename = image_data.get('filename', 'unknown')
+            
+            # Extract just the user message from the full prompt (before "CONTEXT:" section)
+            # Format is: "Task: user: <message>\n\nContext: ..."
+            user_message = prompt
+            if '\n\nCONTEXT:' in prompt:
+                user_message = prompt.split('\n\nCONTEXT:')[0]
+            elif '\nContext: Repository' in prompt:
+                user_message = prompt.split('\nContext: Repository')[0]
+            
+            # Cache key = filename + user message (not full prompt with context)
+            cache_key_data = f"{filename}::{user_message}"
+            cache_key = hashlib.sha256(cache_key_data.encode()).hexdigest()
+            cache_file = cache_dir / f"{cache_key}.json"
+            
+            logger.info(f"🔑 Cache key: {filename} + user_message({len(user_message)} chars) → {cache_key[:16]}...")
+            
+            # Check cache first
+            if cache_file.exists():
+                logger.info(f"✅ Cache HIT for image '{filename}' - loading cached response")
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        cached_result = json.load(f)
+                    logger.info(f"   Cached response: {len(cached_result.get('files', []))} files")
+                    return cached_result
+                except Exception as cache_error:
+                    logger.warning(f"Cache read error: {cache_error}, will regenerate")
+            else:
+                logger.info(f"❌ Cache MISS for image '{filename}' - calling Vision API")
             
             client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
             
@@ -560,6 +610,8 @@ GENERATE CODE THAT:
 
 Generate the code NOW in the required format."""
             
+            logger.info(f"Calling OpenAI Vision API with {self.model_name} for wireframe analysis...")
+            
             messages = [
                 {"role": "system", "content": system_prompt},
                 {
@@ -571,7 +623,6 @@ Generate the code NOW in the required format."""
                 }
             ]
             
-            logger.info(f"Calling OpenAI Vision API with {self.model_name} for wireframe analysis...")
             response = client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
@@ -581,14 +632,35 @@ Generate the code NOW in the required format."""
             
             response_text = response.choices[0].message.content
             logger.info(f"Vision API response length: {len(response_text)} chars")
+
             
             files = self._parse_agent_response(response_text)
             
-            return {
+            # Check if we actually got files
+            if not files or len(files) == 0:
+                logger.error(f"❌ No files extracted from Vision API response")
+                logger.error(f"Response preview: {response_text[:200]}...")
+                return {
+                    "success": False,
+                    "error": f"Vision API did not generate any code. Response: {response_text[:200]}",
+                    "files": []
+                }
+            
+            result = {
                 "success": True,
                 "files": files,
                 "raw_response": response_text
             }
+            
+            # Cache the result at OS level (only cache successful responses with files)
+            try:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2, ensure_ascii=False)
+                logger.info(f"💾 Cached vision response for '{filename}' ({cache_file.name})")
+            except Exception as cache_error:
+                logger.warning(f"Failed to cache result: {cache_error}")
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error in OpenAI Vision API: {e}")

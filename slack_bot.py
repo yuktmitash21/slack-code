@@ -449,10 +449,15 @@ def download_slack_image(image_url, client, file_info=None):
         image_data = base64.b64encode(raw_bytes).decode('utf-8')
         logger.info(f"Image downloaded successfully: {image_format}, {len(raw_bytes)} bytes")
         
+        # Get filename from file_info if available
+        filename = file_info.get('name', 'unknown_image') if file_info else 'unknown_image'
+        logger.info(f"Filename: {filename}")
+        
         return {
             "data": image_data,
             "format": image_format,
-            "url": image_url
+            "url": image_url,
+            "filename": filename
         }
     except requests.exceptions.HTTPError as e:
         logger.error(f"HTTP Error downloading image: {e.response.status_code}")

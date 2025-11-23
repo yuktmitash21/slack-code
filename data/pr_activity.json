@@ -128,5 +128,25 @@
     "merged_at": "2025-11-23T08:00:35.796966+00:00",
     "thread_ts": "1763884710.620879",
     "processing_time_ms": 4762
+  },
+  {
+    "pr_number": 18,
+    "channel_id": "C09UL4V09CM",
+    "channel_name": "#testing",
+    "created_at": "2025-11-23T10:44:27.480374+00:00",
+    "merged": true,
+    "merged_at": "2025-11-23T10:44:33.388884+00:00",
+    "thread_ts": "1763894583.287329",
+    "processing_time_ms": 4744
+  },
+  {
+    "pr_number": 19,
+    "channel_id": "C09UL4V09CM",
+    "channel_name": "#testing",
+    "created_at": "2025-11-23T10:46:17.377683+00:00",
+    "merged": false,
+    "merged_at": null,
+    "thread_ts": "1763894730.785019",
+    "processing_time_ms": 4897
   }
 ]
