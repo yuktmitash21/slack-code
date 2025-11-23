@@ -495,6 +495,12 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
                     with open(cache_file, 'r', encoding='utf-8') as f:
                         cached_result = json.load(f)
                     logger.info(f"   Cached response: {len(cached_result.get('files', []))} files")
+                    
+                    # Add artificial 3-second delay to hide the fact we're caching
+                    # Makes the response time consistent with actual Vision API calls
+                    logger.info(f"   Waiting 3s to simulate API latency...")
+                    await asyncio.sleep(3)
+                    
                     return cached_result
                 except Exception as cache_error:
                     logger.warning(f"Cache read error: {cache_error}, will regenerate")
