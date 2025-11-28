@@ -222,12 +222,13 @@ def format_changeset_response(ai_response, is_initial=False):
 _user_github_helpers = {}
 
 
-def get_user_github_helper(slack_user_id: str) -> Optional[GitHubPRHelper]:
+def get_user_github_helper(slack_user_id: str, channel_id: Optional[str] = None) -> Optional[GitHubPRHelper]:
     """
-    Get or create a GitHubPRHelper instance for a specific user
+    Get or create a GitHubPRHelper instance for a specific user and channel
     
     Args:
         slack_user_id: Slack user ID
+        channel_id: Optional channel ID for channel-specific repo configuration
         
     Returns:
         GitHubPRHelper instance or None if user not authenticated/configured
@@ -237,15 +238,18 @@ def get_user_github_helper(slack_user_id: str) -> Optional[GitHubPRHelper]:
         logger.warning(f"User {slack_user_id} not authenticated with GitHub")
         return None
     
-    # Check if user has set a repo
-    user_repo = auth_manager.get_user_repo(slack_user_id)
+    # Check if user has set a repo (channel-specific or global)
+    user_repo = auth_manager.get_user_repo(slack_user_id, channel_id)
     if not user_repo or user_repo == "Not set":
-        logger.warning(f"User {slack_user_id} has not set a default repository")
+        logger.warning(f"User {slack_user_id} has not set a repository for channel {channel_id}")
         return None
     
-    # Return cached instance if available
-    if slack_user_id in _user_github_helpers:
-        return _user_github_helpers[slack_user_id]
+    # Use cache key that includes channel-specific repo
+    cache_key = f"{slack_user_id}:{user_repo}"
+    
+    # Return cached instance if available for this user+repo combo
+    if cache_key in _user_github_helpers:
+        return _user_github_helpers[cache_key]
     
     # Create new instance
     try:
@@ -258,8 +262,8 @@ def get_user_github_helper(slack_user_id: str) -> Optional[GitHubPRHelper]:
             use_ai=use_ai
         )
         
-        _user_github_helpers[slack_user_id] = helper
-        logger.info(f"Created GitHub helper for user {slack_user_id} (repo: {user_repo})")
+        _user_github_helpers[cache_key] = helper
+        logger.info(f"Created GitHub helper for user {slack_user_id} (repo: {user_repo}, channel: {channel_id})")
         return helper
         
     except Exception as e:
@@ -600,11 +604,11 @@ def handle_pr_conversation(
     logger.info(f"   Current Conversations: {list(pr_conversations.keys())}")
     logger.info("=" * 80)
     
-    # Get per-user GitHub helper
-    user_github_helper = get_user_github_helper(user_id)
+    # Get per-user GitHub helper (channel-specific repo)
+    user_github_helper = get_user_github_helper(user_id, channel_id)
     if not user_github_helper:
         say(
-            text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection.",
+            text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection and set a repo for this channel.",
             thread_ts=thread_ts
         )
         return
@@ -1104,7 +1108,7 @@ Please check the logs and try again.
         )
 
 
-def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
+def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts, channel_id=None):
     """
     Handle merging a GitHub pull request
     
@@ -1114,9 +1118,10 @@ def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
         merge_method: Method to use for merging (merge, squash, rebase)
         say: Slack say function
         thread_ts: Thread timestamp
+        channel_id: Optional channel ID for channel-specific repo
     """
-    # Get per-user GitHub helper
-    user_github_helper = get_user_github_helper(user_id)
+    # Get per-user GitHub helper (channel-specific repo)
+    user_github_helper = get_user_github_helper(user_id, channel_id)
     if not user_github_helper:
         say(
             text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection.",
@@ -1195,7 +1200,7 @@ Please check the PR status and try again, or merge it manually on GitHub.
         )
 
 
-def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
+def handle_pr_unmerge(user_id, pr_number, say, thread_ts, channel_id=None):
     """
     Handle creating a revert PR for a merged pull request
     
@@ -1203,10 +1208,11 @@ def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
         user_id: Slack user ID
         pr_number: PR number to revert
         say: Slack say function
-        thread_ts: Thread timestamp
+        thread_ts: Thread_timestamp
+        channel_id: Optional channel ID for channel-specific repo
     """
-    # Get per-user GitHub helper
-    user_github_helper = get_user_github_helper(user_id)
+    # Get per-user GitHub helper (channel-specific repo)
+    user_github_helper = get_user_github_helper(user_id, channel_id)
     if not user_github_helper:
         say(
             text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection.",
@@ -1338,10 +1344,10 @@ def handle_app_mention(event, client, say, logger):
             repo_match = re.search(r'set\s+repo\s+([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)', message_text, re.IGNORECASE)
             if repo_match:
                 repo = repo_match.group(1)
-                auth_manager.set_user_repo(user_id, repo)
+                auth_manager.set_user_repo(user_id, repo, channel_id)
                 user_info = auth_manager.get_user_info(user_id)
                 say(
-                    text=f"<@{user_id}> ✅ Default repository set to: `{repo}`\n\nYou're all set! Now you can:\n• Create PRs: _\"create a login page\"_\n• Merge PRs: _\"merge PR 123\"_\n• View stats: _\"show my usage\"_",
+                    text=f"<@{user_id}> ✅ Repository set for this channel: `{repo}`\n\n💡 *Pro tip:* You can set different repos in different channels!\n\nYou're all set! Now you can:\n• Create PRs: _\"create a login page\"_\n• Merge PRs: _\"merge PR 123\"_\n• View stats: _\"show my usage\"_",
                     thread_ts=thread_ts
                 )
             else:
@@ -1383,17 +1389,18 @@ def handle_app_mention(event, client, say, logger):
                 )
             return
         
-        # Now check if user has set a default repository (for all OTHER commands)
-        user_repo = auth_manager.get_user_repo(user_id)
+        # Now check if user has set a repository for this channel (for all OTHER commands)
+        user_repo = auth_manager.get_user_repo(user_id, channel_id)
         if not user_repo or user_repo == "Not set":
             user_github_info = auth_manager.get_user_info(user_id)
             github_username = user_github_info.get("github_username", "Unknown")
             say(
-                text=f"<@{user_id}> 📂 *Repository Not Set*\n\n"
-                     f"You're connected as GitHub user `{github_username}`, but you need to set a default repository.\n\n"
-                     f"📝 Set your repo:\n"
+                text=f"<@{user_id}> 📂 *Repository Not Set for This Channel*\n\n"
+                     f"You're connected as GitHub user `{github_username}`, but you haven't set a repository for this channel yet.\n\n"
+                     f"📝 Set your repo for this channel:\n"
                      f"```\n@bot set repo your-username/your-repository\n```\n\n"
-                     f"Example: `@bot set repo octocat/Hello-World`",
+                     f"Example: `@bot set repo octocat/Hello-World`\n\n"
+                     f"💡 *Pro tip:* You can use different repos in different channels!",
                 thread_ts=thread_ts
             )
             return
@@ -1441,13 +1448,13 @@ def handle_app_mention(event, client, say, logger):
             pr_number = command.get("pr_number")
             merge_method = command.get("merge_method", "merge")
             logger.info(f"🤖 AI detected MERGE_PR command: PR #{pr_number} using {merge_method}")
-            handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts)
+            handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts, channel_id)
             return
         
         elif command["command"] == "REVERT_PR":
             pr_number = command.get("pr_number")
             logger.info(f"🤖 AI detected REVERT_PR command: PR #{pr_number}")
-            handle_pr_unmerge(user_id, pr_number, say, thread_ts)
+            handle_pr_unmerge(user_id, pr_number, say, thread_ts, channel_id)
             return
         
         elif command["command"] == "VIEW_USAGE":
@@ -1589,9 +1596,10 @@ def handle_make_pr_button_click(ack, body, client, logger):
         # Get conversation data
         conv = pr_conversations[thread_ts]
         stored_user_id = conv["user_id"]
+        stored_channel_id = conv.get("channel_id", channel_id)
         
-        # Get per-user GitHub helper
-        user_github_helper = get_user_github_helper(stored_user_id)
+        # Get per-user GitHub helper (channel-specific repo)
+        user_github_helper = get_user_github_helper(stored_user_id, stored_channel_id)
         if not user_github_helper:
             client.chat_postMessage(
                 channel=channel_id,
@@ -1766,7 +1774,7 @@ def handle_merge_pr_button_click(ack, body, client, say, logger):
                 blocks=blocks
             )
         
-        handle_pr_merge(user_id, pr_number, "merge", say_wrapper, thread_ts)
+        handle_pr_merge(user_id, pr_number, "merge", say_wrapper, thread_ts, channel_id)
         
     except Exception as e:
         logger.error(f"Error handling Merge PR button: {e}")
@@ -1815,7 +1823,7 @@ def handle_unmerge_pr_button_click(ack, body, client, say, logger):
                 blocks=blocks
             )
         
-        handle_pr_unmerge(user_id, pr_number, say_wrapper, thread_ts)
+        handle_pr_unmerge(user_id, pr_number, say_wrapper, thread_ts, channel_id)
         
     except Exception as e:
         logger.error(f"Error handling Unmerge PR button: {e}")

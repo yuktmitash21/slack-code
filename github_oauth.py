@@ -70,12 +70,30 @@ class GitHubAuthManager:
             return user_data.get("github_token")
         return None
     
-    def get_user_repo(self, slack_user_id: str) -> Optional[str]:
-        """Get a user's default GitHub repo"""
+    def get_user_repo(self, slack_user_id: str, channel_id: Optional[str] = None) -> Optional[str]:
+        """
+        Get a user's GitHub repo for a specific channel
+        
+        Args:
+            slack_user_id: Slack user ID
+            channel_id: Optional channel ID. If provided, returns channel-specific repo.
+                       Falls back to global default if channel repo not set.
+        
+        Returns:
+            Repository in format "owner/repo" or None
+        """
         user_data = self.user_tokens.get(slack_user_id)
-        if user_data:
-            return user_data.get("github_repo")
-        return None
+        if not user_data:
+            return None
+        
+        # Check for channel-specific repo first
+        if channel_id:
+            channel_repos = user_data.get("channel_repos", {})
+            if channel_id in channel_repos:
+                return channel_repos[channel_id]
+        
+        # Fall back to global default repo
+        return user_data.get("github_repo")
     
     def generate_auth_url(self, slack_user_id: str) -> str:
         """
@@ -243,7 +261,8 @@ class GitHubAuthManager:
             self.user_tokens[slack_user_id] = {
                 "github_token": access_token,
                 "github_username": github_username,
-                "github_repo": None,  # User needs to set this separately
+                "github_repo": None,  # Global default repo (optional)
+                "channel_repos": {},  # Per-channel repos: {channel_id: repo}
                 "authenticated_at": datetime.now().isoformat()
             }
             
@@ -264,18 +283,31 @@ class GitHubAuthManager:
                 "error": str(e)
             }
     
-    def set_user_repo(self, slack_user_id: str, repo: str):
+    def set_user_repo(self, slack_user_id: str, repo: str, channel_id: Optional[str] = None):
         """
-        Set a user's default GitHub repository
+        Set a user's GitHub repository for a specific channel
         
         Args:
             slack_user_id: Slack user ID
             repo: Repository in format "owner/repo"
+            channel_id: Optional channel ID. If provided, sets channel-specific repo.
+                       Otherwise sets global default.
         """
         if slack_user_id in self.user_tokens:
-            self.user_tokens[slack_user_id]["github_repo"] = repo
+            # Initialize channel_repos if it doesn't exist (backward compatibility)
+            if "channel_repos" not in self.user_tokens[slack_user_id]:
+                self.user_tokens[slack_user_id]["channel_repos"] = {}
+            
+            if channel_id:
+                # Set channel-specific repo
+                self.user_tokens[slack_user_id]["channel_repos"][channel_id] = repo
+                logger.info(f"Set repo for user {slack_user_id} in channel {channel_id}: {repo}")
+            else:
+                # Set global default repo
+                self.user_tokens[slack_user_id]["github_repo"] = repo
+                logger.info(f"Set global default repo for user {slack_user_id}: {repo}")
+            
             self._save_user_tokens()
-            logger.info(f"Set repo for user {slack_user_id}: {repo}")
     
     def disconnect_user(self, slack_user_id: str):
         """Disconnect a user's GitHub account"""
