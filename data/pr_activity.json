@@ -148,5 +148,15 @@
     "merged_at": null,
     "thread_ts": "1763894730.785019",
     "processing_time_ms": 4897
+  },
+  {
+    "pr_number": 63,
+    "channel_id": "C09UL4V09CM",
+    "channel_name": "#testing",
+    "created_at": "2025-11-28T18:49:07.952291+00:00",
+    "merged": true,
+    "merged_at": "2025-11-28T18:49:24.856459+00:00",
+    "thread_ts": "1764355660.344879",
+    "processing_time_ms": 6454
   }
 ]

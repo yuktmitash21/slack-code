@@ -1,5 +1,6 @@
-# Environment variables
+# Environment variables and secrets
 .env
+data/user_github_tokens.json
 
 # Python
 __pycache__/

@@ -7,16 +7,22 @@ import os
 import logging
 import re
 import time
+import asyncio
+import threading
+from typing import Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables FIRST (before importing modules that need them)
+load_dotenv()
+
+from flask import Flask, request
 from stats_tracker import log_pr_creation, mark_pr_merged
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
-from dotenv import load_dotenv
 from github_helper import GitHubPRHelper
 from intent_classification import is_ready_to_create_pr, classify_command
-
-# Load environment variables
-load_dotenv()
+from github_oauth import auth_manager
 
 # Set up logging
 logging.basicConfig(
@@ -31,12 +37,15 @@ app = App(
     signing_secret=os.environ.get("SLACK_SIGNING_SECRET")
 )
 
+# Initialize Flask app for OAuth callbacks
+flask_app = Flask(__name__)
+
 # Store ongoing conversations for PR creation
 # Format: {thread_ts: conversation_data}
 pr_conversations = {}
 
 
-def _generate_changeset_preview(prompt: str, context: str, github_helper, image_data=None) -> dict:
+def _generate_changeset_preview(prompt: str, context: str, github_helper_instance, image_data=None) -> dict:
     """
     Generate a changeset preview using direct OpenAI API
     This shows proposed changes to the user before PR creation
@@ -48,7 +57,7 @@ def _generate_changeset_preview(prompt: str, context: str, github_helper, image_
         logger.info(f"📸 Image data received in _generate_changeset_preview: {image_data is not None}")
         
         # Use the same AI generator as PR creation
-        if not github_helper or not github_helper.use_ai or not github_helper.ai_generator:
+        if not github_helper_instance or not github_helper_instance.use_ai or not github_helper_instance.ai_generator:
             logger.error("SpoonOS AI generator not available")
             return {
                 "success": False,
@@ -65,7 +74,7 @@ The user can refine these changes through conversation before creating the PR.
 """
         
         # Generate code using SpoonOS (same as PR creation)
-        result = github_helper.ai_generator.generate_code_sync(
+        result = github_helper_instance.ai_generator.generate_code_sync(
             task_description=full_prompt,
             context=context,
             image_data=image_data  # Pass image for vision API
@@ -209,23 +218,69 @@ def format_changeset_response(ai_response, is_initial=False):
     
     return formatted, file_count
 
-# Initialize GitHub helper (if token is available)
+# Per-user GitHub helper instances (cached)
+_user_github_helpers = {}
+
+
+def get_user_github_helper(slack_user_id: str) -> Optional[GitHubPRHelper]:
+    """
+    Get or create a GitHubPRHelper instance for a specific user
+    
+    Args:
+        slack_user_id: Slack user ID
+        
+    Returns:
+        GitHubPRHelper instance or None if user not authenticated/configured
+    """
+    # Check if user is authenticated
+    if not auth_manager.is_user_authenticated(slack_user_id):
+        logger.warning(f"User {slack_user_id} not authenticated with GitHub")
+        return None
+    
+    # Check if user has set a repo
+    user_repo = auth_manager.get_user_repo(slack_user_id)
+    if not user_repo or user_repo == "Not set":
+        logger.warning(f"User {slack_user_id} has not set a default repository")
+        return None
+    
+    # Return cached instance if available
+    if slack_user_id in _user_github_helpers:
+        return _user_github_helpers[slack_user_id]
+    
+    # Create new instance
+    try:
+        user_token = auth_manager.get_user_token(slack_user_id)
+        use_ai = os.environ.get("USE_AI_CODE_GENERATION", "true").lower() == "true"
+        
+        helper = GitHubPRHelper(
+            github_token=user_token,
+            repo_name=user_repo,
+            use_ai=use_ai
+        )
+        
+        _user_github_helpers[slack_user_id] = helper
+        logger.info(f"Created GitHub helper for user {slack_user_id} (repo: {user_repo})")
+        return helper
+        
+    except Exception as e:
+        logger.error(f"Failed to create GitHub helper for user {slack_user_id}: {e}")
+        return None
+
+
+# Legacy support: Try to create a global github_helper if old env vars exist
+# This allows gradual migration - remove once all users are on OAuth
 github_helper = None
 if os.environ.get("GITHUB_TOKEN") and os.environ.get("GITHUB_REPO"):
     try:
-        # Check if AI code generation should be enabled
         use_ai = os.environ.get("USE_AI_CODE_GENERATION", "true").lower() == "true"
-        
         github_helper = GitHubPRHelper(
             github_token=os.environ.get("GITHUB_TOKEN"),
             repo_name=os.environ.get("GITHUB_REPO"),
             use_ai=use_ai
         )
-        logger.info(f"GitHub integration enabled (AI code generation: {use_ai})")
+        logger.info(f"⚠️ Using legacy shared GitHub token (consider migrating to OAuth)")
     except Exception as e:
         logger.warning(f"GitHub integration failed to initialize: {e}")
-else:
-    logger.info("GitHub integration disabled (no token/repo configured)")
 
 
 def get_channel_context(client, channel_id, limit=50):
@@ -542,20 +597,23 @@ def handle_pr_conversation(
     logger.info(f"   Thread TS: {thread_ts}")
     logger.info(f"   Channel ID: {channel_id}")
     logger.info(f"   Is Initial: {is_initial}")
-    logger.info(f"   GitHub Helper Available: {github_helper is not None}")
     logger.info(f"   Current Conversations: {list(pr_conversations.keys())}")
     logger.info("=" * 80)
     
-    if not github_helper:
+    # Get per-user GitHub helper
+    user_github_helper = get_user_github_helper(user_id)
+    if not user_github_helper:
         say(
-            text=f"Sorry <@{user_id}>, GitHub integration is not configured.",
+            text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection.",
             thread_ts=thread_ts
         )
         return
     
+    logger.info(f"   User GitHub Helper: {user_github_helper.repo_name}")
+    
     # Check if this is a file deletion request - skip AI planning for deletions
-    if github_helper and hasattr(github_helper, '_detect_file_deletion'):
-        files_to_delete = github_helper._detect_file_deletion(message_text)
+    if user_github_helper and hasattr(user_github_helper, '_detect_file_deletion'):
+        files_to_delete = user_github_helper._detect_file_deletion(message_text)
         if files_to_delete:
             # For deletion tasks, create PR immediately without AI planning
             logger.info(f"Detected deletion request in conversation: {files_to_delete}, creating PR directly")
@@ -566,15 +624,15 @@ def handle_pr_conversation(
             
             # Fetch codebase context for deletion verification (with user prompt for smart loading)
             try:
-                default_branch = github_helper.repo.default_branch
-                codebase_context = github_helper._get_full_codebase_context(default_branch, user_prompt=message_text)
+                default_branch = user_github_helper.repo.default_branch
+                codebase_context = user_github_helper._get_full_codebase_context(default_branch, user_prompt=message_text)
             except Exception as e:
                 logger.error(f"Error fetching codebase context for deletion: {e}")
                 codebase_context = None
             
             # Create PR directly with the deletion task, passing thread_ts for unique branch naming
             start_time = time.time()
-            result = github_helper.create_random_pr(
+            result = user_github_helper.create_random_pr(
                 message_text, 
                 thread_context=thread_ts,
                 codebase_context=codebase_context
@@ -637,7 +695,7 @@ def handle_pr_conversation(
         
         # Pass thread_ts as context for unique branch naming AND codebase context
         start_time = time.time()
-        result = github_helper.create_random_pr(
+        result = user_github_helper.create_random_pr(
             all_messages, 
             thread_context=thread_ts,
             codebase_context=codebase_context,
@@ -662,9 +720,9 @@ def handle_pr_conversation(
         )
     
     # Check if AI is available
-    if not github_helper.use_ai or not github_helper.ai_generator:
+    if not user_github_helper.use_ai or not user_github_helper.ai_generator:
         say(
-            text=f"<@{stored_user_id}> AI not available. Say **'make PR'** when you want me to create a placeholder PR.",
+            text=f"<@{stored_user_id}> SpoonOS agents not available. Say **'make PR'** when you want me to create a placeholder PR.",
             thread_ts=thread_ts
         )
         return
@@ -687,15 +745,15 @@ def handle_pr_conversation(
             )
             try:
                 # Get the default branch and fetch smart context based on user's task
-                default_branch = github_helper.repo.default_branch
+                default_branch = user_github_helper.repo.default_branch
                 # Use the initial task for smart file selection
                 user_task = pr_conversations[conversation_key].get("initial_task", message_text)
-                codebase_context = github_helper._get_full_codebase_context(default_branch, user_prompt=user_task)
+                codebase_context = user_github_helper._get_full_codebase_context(default_branch, user_prompt=user_task)
                 pr_conversations[conversation_key]["codebase_context"] = codebase_context
                 logger.info(f"Codebase context cached: {len(codebase_context)} chars")
             except Exception as e:
                 logger.error(f"Error fetching codebase context: {e}")
-                pr_conversations[conversation_key]["codebase_context"] = f"Repository: {github_helper.repo_name}\n\nError reading codebase: {str(e)}"
+                pr_conversations[conversation_key]["codebase_context"] = f"Repository: {user_github_helper.repo_name}\n\nError reading codebase: {str(e)}"
         
         # Build conversation context
         conversation_history = pr_conversations[conversation_key]["messages"]
@@ -704,7 +762,7 @@ def handle_pr_conversation(
         # Generate changeset preview
         planning_prompt = f"""Task: {full_context}
 
-Context: Repository {github_helper.repo_name}
+Context: Repository {user_github_helper.repo_name}
 
 IMPORTANT: Propose CONCRETE CODE CHANGES immediately. Do NOT ask clarifying questions.
 
@@ -765,7 +823,7 @@ Rules:
         ai_result = _generate_changeset_preview(
             prompt=planning_prompt,
             context=full_codebase_context,
-            github_helper=github_helper,
+            github_helper_instance=user_github_helper,
             image_data=stored_image_data  # Pass image for vision API
         )
         
@@ -1057,9 +1115,11 @@ def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
         say: Slack say function
         thread_ts: Thread timestamp
     """
-    if not github_helper:
+    # Get per-user GitHub helper
+    user_github_helper = get_user_github_helper(user_id)
+    if not user_github_helper:
         say(
-            text=f"Sorry <@{user_id}>, GitHub integration is not configured. Please add GITHUB_TOKEN and GITHUB_REPO to your .env file.",
+            text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection.",
             thread_ts=thread_ts
         )
         return
@@ -1071,7 +1131,7 @@ def handle_pr_merge(user_id, pr_number, merge_method, say, thread_ts):
     )
     
     # Merge the PR
-    result = github_helper.merge_pr(pr_number, merge_method)
+    result = user_github_helper.merge_pr(pr_number, merge_method)
     
     if result["success"]:
         try:
@@ -1145,9 +1205,11 @@ def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
         say: Slack say function
         thread_ts: Thread timestamp
     """
-    if not github_helper:
+    # Get per-user GitHub helper
+    user_github_helper = get_user_github_helper(user_id)
+    if not user_github_helper:
         say(
-            text=f"Sorry <@{user_id}>, GitHub integration is not configured. Please add GITHUB_TOKEN and GITHUB_REPO to your .env file.",
+            text=f"<@{user_id}> ❌ GitHub helper not available. Please check your connection.",
             thread_ts=thread_ts
         )
         return
@@ -1159,7 +1221,7 @@ def handle_pr_unmerge(user_id, pr_number, say, thread_ts):
     )
     
     # Create the revert PR
-    result = github_helper.create_revert_pr(pr_number)
+    result = user_github_helper.create_revert_pr(pr_number)
     
     if result["success"]:
         response = f"""✅ *Revert Pull Request Created Successfully!*
@@ -1257,6 +1319,84 @@ def handle_app_mention(event, client, say, logger):
         # Get user info
         user_info = client.users_info(user=user_id)
         username = user_info["user"]["real_name"] or user_info["user"]["name"]
+        
+        # Check if user has authenticated with GitHub
+        if not auth_manager.is_user_authenticated(user_id):
+            # User needs to authenticate first
+            auth_message = auth_manager.get_auth_instructions_message(user_id)
+            say(
+                **auth_message,
+                thread_ts=thread_ts
+            )
+            return
+        
+        # Check for GitHub management commands (BEFORE repo check, since these don't need a repo)
+        clean_text = re.sub(r'<@[A-Z0-9]+>', '', message_text).strip().lower()
+        
+        # SET REPO command
+        if re.search(r'\bset\s+repo\b', clean_text):
+            repo_match = re.search(r'set\s+repo\s+([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)', message_text, re.IGNORECASE)
+            if repo_match:
+                repo = repo_match.group(1)
+                auth_manager.set_user_repo(user_id, repo)
+                user_info = auth_manager.get_user_info(user_id)
+                say(
+                    text=f"<@{user_id}> ✅ Default repository set to: `{repo}`\n\nYou're all set! Now you can:\n• Create PRs: _\"create a login page\"_\n• Merge PRs: _\"merge PR 123\"_\n• View stats: _\"show my usage\"_",
+                    thread_ts=thread_ts
+                )
+            else:
+                say(
+                    text=f"<@{user_id}> ⚠️ Please specify a repository in the format: `owner/repository`\n\nExample: `set repo myusername/my-project`",
+                    thread_ts=thread_ts
+                )
+            return
+        
+        # GITHUB STATUS command
+        elif re.search(r'\bgithub\s+status\b', clean_text) or re.search(r'\bconnection\s+status\b', clean_text):
+            user_info = auth_manager.get_user_info(user_id)
+            if user_info:
+                github_username = user_info.get("github_username", "Unknown")
+                github_repo = user_info.get("github_repo", "Not set")
+                auth_date = user_info.get("authenticated_at", "Unknown")
+                say(
+                    text=f"<@{user_id}> 🔗 *GitHub Connection Status*\n\n✅ Connected\n\n🐙 *GitHub User:* `{github_username}`\n📂 *Default Repo:* `{github_repo}`\n📅 *Connected:* {auth_date[:10]}\n\n_To change repo: `set repo owner/repository`_\n_To disconnect: `disconnect github`_",
+                    thread_ts=thread_ts
+                )
+            else:
+                say(
+                    text=f"<@{user_id}> ❌ Not connected to GitHub",
+                    thread_ts=thread_ts
+                )
+            return
+        
+        # DISCONNECT GITHUB command
+        elif re.search(r'\bdisconnect\s+github\b', clean_text):
+            if auth_manager.disconnect_user(user_id):
+                say(
+                    text=f"<@{user_id}> 👋 Your GitHub account has been disconnected.\n\nTo use the bot again, you'll need to reconnect your GitHub account.",
+                    thread_ts=thread_ts
+                )
+            else:
+                say(
+                    text=f"<@{user_id}> ⚠️ No GitHub account connected.",
+                    thread_ts=thread_ts
+                )
+            return
+        
+        # Now check if user has set a default repository (for all OTHER commands)
+        user_repo = auth_manager.get_user_repo(user_id)
+        if not user_repo or user_repo == "Not set":
+            user_github_info = auth_manager.get_user_info(user_id)
+            github_username = user_github_info.get("github_username", "Unknown")
+            say(
+                text=f"<@{user_id}> 📂 *Repository Not Set*\n\n"
+                     f"You're connected as GitHub user `{github_username}`, but you need to set a default repository.\n\n"
+                     f"📝 Set your repo:\n"
+                     f"```\n@bot set repo your-username/your-repository\n```\n\n"
+                     f"Example: `@bot set repo octocat/Hello-World`",
+                thread_ts=thread_ts
+            )
+            return
         
         # Check if this is a continuation of a PR conversation first
         if thread_ts in pr_conversations:
@@ -1450,6 +1590,16 @@ def handle_make_pr_button_click(ack, body, client, logger):
         conv = pr_conversations[thread_ts]
         stored_user_id = conv["user_id"]
         
+        # Get per-user GitHub helper
+        user_github_helper = get_user_github_helper(stored_user_id)
+        if not user_github_helper:
+            client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=f"<@{stored_user_id}> ❌ GitHub helper not available. Please check your connection."
+            )
+            return
+        
         # Check if PR was already created (via text "make PR")
         if conv.get("pr_created"):
             result = conv.get("pr_result", {})
@@ -1488,7 +1638,7 @@ def handle_make_pr_button_click(ack, body, client, logger):
         
         # Create the PR using cached files (no second AI call!)
         start_time = time.time()
-        result = github_helper.create_random_pr(
+        result = user_github_helper.create_random_pr(
             all_messages, 
             thread_context=thread_ts,
             codebase_context=codebase_context,
@@ -1765,6 +1915,117 @@ def handle_message_events(event, say, client, logger):
 
 
 # Start the app
+# ============================================================================
+# Flask OAuth Callback Routes
+# ============================================================================
+
+@flask_app.route('/auth/github/callback')
+def github_callback():
+    """Handle GitHub OAuth callback"""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    
+    if not code or not state:
+        return """
+        <html>
+            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+                <h1>❌ Authentication Failed</h1>
+                <p>Missing code or state parameter</p>
+            </body>
+        </html>
+        """, 400
+    
+    # Handle the OAuth callback (synchronous call)
+    result = asyncio.run(auth_manager.handle_oauth_callback(code, state))
+    
+    if result["success"]:
+        github_username = result["github_username"]
+        return f"""
+        <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 40px;
+                        text-align: center;
+                        color: white;
+                    }}
+                    .container {{
+                        background: white;
+                        color: #333;
+                        padding: 40px;
+                        border-radius: 12px;
+                        max-width: 500px;
+                        margin: 0 auto;
+                        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+                    }}
+                    h1 {{ color: #4CAF50; margin-bottom: 10px; }}
+                    .username {{ 
+                        background: #f0f0f0;
+                        padding: 10px 20px;
+                        border-radius: 20px;
+                        display: inline-block;
+                        margin: 20px 0;
+                        font-weight: bold;
+                    }}
+                    .next-steps {{
+                        text-align: left;
+                        background: #f9f9f9;
+                        padding: 20px;
+                        border-radius: 8px;
+                        margin-top: 20px;
+                    }}
+                    .next-steps li {{ margin: 10px 0; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>✅ Successfully Connected!</h1>
+                    <p>Your GitHub account has been linked to the Slack bot.</p>
+                    <div class="username">🐙 {github_username}</div>
+                    
+                    <div class="next-steps">
+                        <h3>📋 Next Steps:</h3>
+                        <ol>
+                            <li>Go back to Slack</li>
+                            <li>Mention the bot: <code>@bot set repo owner/repository</code></li>
+                            <li>Start creating PRs: <code>@bot create a login page</code></li>
+                        </ol>
+                    </div>
+                    
+                    <p style="margin-top: 30px; color: #888; font-size: 14px;">
+                        You can close this window now
+                    </p>
+                </div>
+            </body>
+        </html>
+        """
+    else:
+        error = result.get("error", "Unknown error")
+        return f"""
+        <html>
+            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+                <h1>❌ Authentication Failed</h1>
+                <p>{error}</p>
+            </body>
+        </html>
+        """, 400
+
+
+@flask_app.route('/health')
+def health():
+    """Health check endpoint"""
+    return {"status": "ok", "service": "slack-bot-with-oauth"}
+
+
+def run_flask():
+    """Run Flask server in a separate thread"""
+    port = int(os.environ.get("OAUTH_PORT", 5050))
+    logger.info(f"🔐 Starting OAuth callback server on port {port}...")
+    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+
 if __name__ == "__main__":
     try:
         # Get the App-Level Token for Socket Mode
@@ -1775,9 +2036,19 @@ if __name__ == "__main__":
         
         if not os.environ.get("SLACK_BOT_TOKEN"):
             raise ValueError("SLACK_BOT_TOKEN not found in environment variables")
-            
-        logger.info("⚡️ Starting Slack bot in Socket Mode...")
         
+        # Start Flask OAuth server in background thread
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        
+        logger.info("=" * 60)
+        logger.info("🚀 Slack Bot with GitHub OAuth")
+        logger.info("=" * 60)
+        logger.info("📍 OAuth Callback: http://localhost:5050/auth/github/callback")
+        logger.info("🏥 Health Check: http://localhost:5050/health")
+        logger.info("⚡️ Slack Bot: Starting Socket Mode...")
+        logger.info("=" * 60)
+            
         # Start the Socket Mode handler
         handler = SocketModeHandler(app, app_token)
         handler.start()
