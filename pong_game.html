@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong Game</title>
+    <style>
+        canvas {
+            background: black;
+            display: block;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="pongCanvas" width="800" height="400"></canvas>
+    <script>
+        console.log("Initializing Pong game...");
+
+        const canvas = document.getElementById('pongCanvas');
+        const context = canvas.getContext('2d');
+
+        console.log("Canvas and context initialized.");
+
+        // Paddle properties
+        const paddleWidth = 10, paddleHeight = 100;
+        const player = { x: 0, y: (canvas.height - paddleHeight) / 2, width: paddleWidth, height: paddleHeight, color: 'white', dy: 5 };
+        const computer = { x: canvas.width - paddleWidth, y: (canvas.height - paddleHeight) / 2, width: paddleWidth, height: paddleHeight, color: 'white', dy: 5 };
+
+        console.log("Player and computer paddles initialized.");
+
+        // Ball properties
+        const ball = { x: canvas.width / 2, y: canvas.height / 2, radius: 10, speed: 4, velocityX: 4, velocityY: 4, color: 'white' };
+
+        console.log("Ball initialized.");
+
+        // Draw rectangle
+        function drawRect(x, y, w, h, color) {
+            console.log(`Drawing rectangle at (${x}, ${y}) with width ${w} and height ${h}.`);
+            context.fillStyle = color;
+            context.fillRect(x, y, w, h);
+        }
+
+        // Draw circle
+        function drawCircle(x, y, r, color) {
+            console.log(`Drawing circle at (${x}, ${y}) with radius ${r}.`);
+            context.fillStyle = color;
+            context.beginPath();
+            context.arc(x, y, r, 0, Math.PI * 2, false);
+            context.closePath();
+            context.fill();
+        }
+
+        // Draw text
+        function drawText(text, x, y, color) {
+            console.log(`Drawing text "${text}" at (${x}, ${y}).`);
+            context.fillStyle = color;
+            context.font = "35px Arial";
+            context.fillText(text, x, y);
+        }
+
+        // Render the game
+        function render() {
+            console.log("Rendering game frame...");
+            drawRect(0, 0, canvas.width, canvas.height, 'black');
+
+            // Draw paddles
+            drawRect(player.x, player.y, player.width, player.height, player.color);
+            drawRect(computer.x, computer.y, computer.width, computer.height, computer.color);
+
+            // Draw ball
+            drawCircle(ball.x, ball.y, ball.radius, ball.color);
+        }
+
+        // Update game objects
+        function update() {
+            console.log("Updating game objects...");
+            ball.x += ball.velocityX;
+            ball.y += ball.velocityY;
+
+            // Detect collision with top and bottom walls
+            if (ball.y + ball.radius > canvas.height || ball.y - ball.radius < 0) {
+                console.log("Ball hit top/bottom wall.");
+                ball.velocityY = -ball.velocityY;
+            }
+
+            // Detect collision with paddles
+            if (ball.x - ball.radius < player.x + player.width && ball.y > player.y && ball.y < player.y + player.height) {
+                console.log("Ball hit player paddle.");
+                ball.velocityX = -ball.velocityX;
+            }
+
+            if (ball.x + ball.radius > computer.x && ball.y > computer.y && ball.y < computer.y + computer.height) {
+                console.log("Ball hit computer paddle.");
+                ball.velocityX = -ball.velocityX;
+            }
+
+            // Simple AI for computer paddle
+            if (ball.y < computer.y + computer.height / 2) {
+                computer.y -= computer.dy;
+            } else {
+                computer.y += computer.dy;
+            }
+        }
+
+        // Game loop
+        function gameLoop() {
+            console.log("Game loop started.");
+            update();
+            render();
+        }
+
+        // Control player paddle
+        document.addEventListener('keydown', event => {
+            console.log(`Key down: ${event.keyCode}`);
+            switch (event.keyCode) {
+                case 38: // Up arrow
+                    player.y -= player.dy;
+                    break;
+                case 40: // Down arrow
+                    player.y += player.dy;
+                    break;
+            }
+        });
+
+        // Start the game
+        console.log("Starting game...");
+        setInterval(gameLoop, 1000 / 60);
+    </script>
+</body>
+</html>
