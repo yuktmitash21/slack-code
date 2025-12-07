@@ -9,6 +9,7 @@ import re
 import time
 import asyncio
 import threading
+import json
 from typing import Optional
 from datetime import datetime
 from dotenv import load_dotenv
@@ -42,7 +43,37 @@ flask_app = Flask(__name__)
 
 # Store ongoing conversations for PR creation
 # Format: {thread_ts: conversation_data}
-pr_conversations = {}
+# Persistent storage file path
+PR_CONVERSATIONS_FILE = os.path.join(os.path.dirname(__file__), "data", "pr_conversations.json")
+
+
+def _load_pr_conversations() -> dict:
+    """Load pr_conversations from persistent storage."""
+    try:
+        if os.path.exists(PR_CONVERSATIONS_FILE):
+            with open(PR_CONVERSATIONS_FILE, "r") as f:
+                data = json.load(f)
+                logger.info(f"📂 Loaded {len(data)} PR conversations from storage")
+                return data
+    except Exception as e:
+        logger.error(f"Error loading pr_conversations: {e}")
+    return {}
+
+
+def _save_pr_conversations():
+    """Save pr_conversations to persistent storage."""
+    try:
+        # Ensure data directory exists
+        os.makedirs(os.path.dirname(PR_CONVERSATIONS_FILE), exist_ok=True)
+        with open(PR_CONVERSATIONS_FILE, "w") as f:
+            json.dump(pr_conversations, f, indent=2)
+        logger.debug(f"💾 Saved {len(pr_conversations)} PR conversations to storage")
+    except Exception as e:
+        logger.error(f"Error saving pr_conversations: {e}")
+
+
+# Load conversations from persistent storage on startup
+pr_conversations = _load_pr_conversations()
 
 
 def _generate_changeset_preview(prompt: str, context: str, github_helper_instance, image_data=None) -> dict:
@@ -663,6 +694,7 @@ def handle_pr_conversation(
             "cached_files": [],  # Parsed files from preview (for PR creation)
             "image_data": image_data  # Store image for vision API
         }
+        _save_pr_conversations()  # Save new conversation
     else:
         if image_data:
             # Update image data if provided in follow-up message
@@ -679,6 +711,7 @@ def handle_pr_conversation(
         "role": "user",
         "content": message_text
     })
+    _save_pr_conversations()  # Save after user message
     
     # Check if user wants to create the PR now
     if is_ready_to_create_pr(message_text) and not is_initial:
@@ -714,6 +747,7 @@ def handle_pr_conversation(
         # Mark as complete so button handler knows it's already created
         pr_conversations[conversation_key]["pr_created"] = True
         pr_conversations[conversation_key]["pr_result"] = result
+        _save_pr_conversations()  # Save after PR creation
         return
     
     # Send initial message for new conversations
@@ -758,6 +792,7 @@ def handle_pr_conversation(
             except Exception as e:
                 logger.error(f"Error fetching codebase context: {e}")
                 pr_conversations[conversation_key]["codebase_context"] = f"Repository: {user_github_helper.repo_name}\n\nError reading codebase: {str(e)}"
+            _save_pr_conversations()  # Save after caching codebase context
         
         # Build conversation context
         conversation_history = pr_conversations[conversation_key]["messages"]
@@ -865,6 +900,7 @@ Rules:
             "content": ai_response
         })
         pr_conversations[conversation_key]["cached_files"] = parsed_files  # Cache for PR!
+        _save_pr_conversations()  # Save after AI response and cached files
         
         # Send response with instructions and Make PR button
         # Split long messages into chunks (Slack limit: 3000 chars per block)
@@ -1290,6 +1326,203 @@ Note: You can only revert PRs that have been merged.
         )
 
 
+def handle_repo_create(user_id, repo_name, say, thread_ts, description=None, private=False):
+    """
+    Handle creating a new GitHub repository
+    
+    Args:
+        user_id: Slack user ID
+        repo_name: Name of the repository to create
+        say: Slack say function
+        thread_ts: Thread timestamp
+        description: Optional repository description
+        private: Whether the repo should be private (default False)
+    """
+    from github import Github, GithubException
+    
+    # Get user's GitHub token
+    github_token = auth_manager.get_user_token(user_id)
+    if not github_token:
+        say(
+            text=f"<@{user_id}> ❌ GitHub not connected. Please connect your GitHub account first.",
+            thread_ts=thread_ts
+        )
+        return
+    
+    try:
+        # Send acknowledgment
+        visibility = "private" if private else "public"
+        say(
+            text=f"<@{user_id}> 🔧 Creating {visibility} repository `{repo_name}`...",
+            thread_ts=thread_ts
+        )
+        
+        # Create the repository using the user's GitHub token
+        g = Github(github_token)
+        user = g.get_user()
+        
+        # Create the repo
+        new_repo = user.create_repo(
+            name=repo_name,
+            description=description or f"Repository created via Slack bot",
+            private=private,
+            auto_init=True  # Initialize with README
+        )
+        
+        # Get user's GitHub username for the full repo path
+        github_username = user.login
+        full_repo_name = f"{github_username}/{repo_name}"
+        
+        logger.info(f"✅ Created repository: {full_repo_name}")
+        
+        # Send success message
+        response = f"""<@{user_id}> ✅ *Repository Created Successfully!*
+
+📦 *Name:* `{full_repo_name}`
+🔒 *Visibility:* {visibility.capitalize()}
+📝 *Description:* {description or "Repository created via Slack bot"}
+🔗 *URL:* {new_repo.html_url}
+
+💡 *Next steps:*
+• Set this repo for this channel: `@bot set repo {full_repo_name}`
+• Clone it: `git clone {new_repo.clone_url}`
+• Start coding and create PRs!"""
+        
+        say(
+            text=response,
+            thread_ts=thread_ts
+        )
+        
+    except GithubException as e:
+        error_message = str(e)
+        if "name already exists" in error_message.lower() or e.status == 422:
+            say(
+                text=f"<@{user_id}> ❌ Repository `{repo_name}` already exists on your account. Please choose a different name.",
+                thread_ts=thread_ts
+            )
+        else:
+            logger.error(f"GitHub error creating repo: {e}")
+            say(
+                text=f"<@{user_id}> ❌ Failed to create repository: {error_message}",
+                thread_ts=thread_ts
+            )
+    except Exception as e:
+        logger.error(f"Error creating repository: {e}")
+        say(
+            text=f"<@{user_id}> ❌ An error occurred while creating the repository: {str(e)}",
+            thread_ts=thread_ts
+        )
+
+
+def _handle_general_command(user_id, message_text, say, thread_ts):
+    """
+    Handle GENERAL commands - conversational responses and help
+    
+    Args:
+        user_id: Slack user ID
+        message_text: User's message
+        say: Slack say function
+        thread_ts: Thread timestamp
+    """
+    try:
+        import openai
+        
+        client_openai = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        
+        # Build context about what the bot can do
+        bot_capabilities = """You are a helpful Slack bot. Here's what you can do:
+
+🤖 **What I Can Do:**
+
+1. **Write Code for You** - I generate actual code using AI
+   - I have full access to your codebase
+   - I understand your existing code and can modify it
+   - I show you changesets before creating PRs
+   - You can iterate: "add tests", "use one file", etc.
+
+2. **Create PRs** - Turn code changes into pull requests
+   - Say: "create a PR to add login page"
+   - I'll show you the code, you can refine it
+   - Then: click "Make PR" button or say "make pr"
+
+3. **Merge PRs** - Merge pull requests to main
+   - Say: "merge PR 123"
+   - Options: "merge PR 123 with squash" or "using rebase"
+
+4. **Unmerge PRs** - Revert merged pull requests
+   - Say: "revert PR 123" or "unmerge PR 45"
+
+5. **Create Repositories** - Create new GitHub repos
+   - Say: "create a new repo called my-project"
+   - Options: "create a private repo named secret-app"
+
+6. **View Usage** - See your activity and statistics
+   - Say: "show my usage" or "dashboard"
+   - I'll send you a link to your personal dashboard
+
+I understand natural language and use AI for everything!"""
+
+        response_ai = client_openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"""You are a helpful Slack bot assistant. Answer the user's question in a friendly way.
+
+{bot_capabilities}
+
+IMPORTANT: Always include a brief mention of your capabilities in your response, even for casual questions like "how are you" or "hello". 
+
+For example:
+- "How are you?" → "I'm doing great! I'm here to help you write code and manage PRs. I can create PRs, merge them, revert them, and show you your usage stats. What can I help you build today?"
+- "Hello" → "Hey there! 👋 I'm a bot that writes code for you and manages GitHub PRs. Need help creating something? Or want to see your dashboard?"
+- "What's up?" → "Not much! Ready to help you with code. I can create PRs, merge them, revert changes, or show you your activity. What are you working on?"
+
+Always be conversational but make sure to highlight what you can do. Use Slack markdown formatting."""
+                },
+                {
+                    "role": "user",
+                    "content": message_text
+                }
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        response = f"<@{user_id}> {response_ai.choices[0].message.content}"
+        
+    except Exception as e:
+        logger.error(f"Error generating AI response: {e}")
+        # Fallback to simple help text
+        response = f"""Hi <@{user_id}>! 🤖
+
+*What I Can Do:*
+
+📝 **Write Code for You**
+• I generate actual code using AI
+• I understand your codebase
+
+🚀 **Create PRs**
+• `create a PR to add login page`
+
+✅ **Merge PRs**
+• `merge PR 123`
+
+↩️ **Unmerge PRs**
+• `revert PR 45`
+
+📦 **Create Repos**
+• `create a new repo called my-app`
+
+Try: "create a PR for [your idea]" and I'll show you the code!"""
+    
+    # Send response in the same thread if applicable
+    say(
+        text=response,
+        thread_ts=thread_ts
+    )
+
+
 @app.event("app_mention")
 def handle_app_mention(event, client, say, logger):
     """
@@ -1389,7 +1622,33 @@ def handle_app_mention(event, client, say, logger):
                 )
             return
         
-        # Now check if user has set a repository for this channel (for all OTHER commands)
+        # Early command classification to check if repo is needed
+        command = classify_command(message_text)
+        
+        # Handle commands that DON'T require a repo to be set
+        if command["command"] == "CREATE_REPO":
+            repo_name = command.get("repo_name")
+            description = command.get("description")
+            private = command.get("private", False)
+            logger.info(f"🤖 AI detected CREATE_REPO command: {repo_name} (private={private})")
+            handle_repo_create(user_id, repo_name, say, thread_ts, description=description, private=private)
+            return
+        
+        if command["command"] == "VIEW_USAGE":
+            logger.info(f"🤖 AI detected VIEW_USAGE command")
+            say(
+                text=f"<@{user_id}> 📊 *Your Usage Dashboard*\n\nView your activity, stats, and PR history:\n\n🔗 https://100286ffba51.ngrok-free.app/dashboard\n\n_See all your PRs, merge activity, and bot usage statistics_",
+                thread_ts=thread_ts
+            )
+            return
+        
+        if command["command"] == "GENERAL":
+            # Handle GENERAL command without requiring repo
+            logger.info(f"🤖 Handling GENERAL command: {message_text}")
+            _handle_general_command(user_id, message_text, say, thread_ts)
+            return
+        
+        # Now check if user has set a repository for this channel (required for PR/merge commands)
         user_repo = auth_manager.get_user_repo(user_id, channel_id)
         if not user_repo or user_repo == "Not set":
             user_github_info = auth_manager.get_user_info(user_id)
@@ -1422,9 +1681,7 @@ def handle_app_mention(event, client, say, logger):
             )
             return
         
-        # Use AI-powered command classification
-        command = classify_command(message_text)
-        
+        # Command was already classified early - use that result
         # Treat CREATE_PR and REFINE identically - both start PR conversations
         if command["command"] in ["CREATE_PR", "REFINE"]:
             # Extract task description (for CREATE_PR) or use the message as-is (for REFINE)
@@ -1457,109 +1714,7 @@ def handle_app_mention(event, client, say, logger):
             handle_pr_unmerge(user_id, pr_number, say, thread_ts, channel_id)
             return
         
-        elif command["command"] == "VIEW_USAGE":
-            logger.info(f"🤖 AI detected VIEW_USAGE command")
-            say(
-                text=f"<@{user_id}> 📊 *Your Usage Dashboard*\n\nView your activity, stats, and PR history:\n\n🔗 https://100286ffba51.ngrok-free.app/dashboard\n\n_See all your PRs, merge activity, and bot usage statistics_",
-                thread_ts=thread_ts
-            )
-            return
-        
-        # GENERAL command - answer the question intelligently
-        logger.info(f"🤖 Handling GENERAL command: {message_text}")
-        
-        # Use AI to generate a helpful response
-        try:
-            import openai
-            
-            client_openai = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-            
-            # Build context about what the bot can do
-            bot_capabilities = """You are a helpful Slack bot. Here's what you can do:
-
-🤖 **What I Can Do:**
-
-1. **Write Code for You** - I generate actual code using AI
-   - I have full access to your codebase
-   - I understand your existing code and can modify it
-   - I show you changesets before creating PRs
-   - You can iterate: "add tests", "use one file", etc.
-
-2. **Create PRs** - Turn code changes into pull requests
-   - Say: "create a PR to add login page"
-   - I'll show you the code, you can refine it
-   - Then: click "Make PR" button or say "make pr"
-
-3. **Merge PRs** - Merge pull requests to main
-   - Say: "merge PR 123"
-   - Options: "merge PR 123 with squash" or "using rebase"
-
-4. **Unmerge PRs** - Revert merged pull requests
-   - Say: "revert PR 123" or "unmerge PR 45"
-
-5. **View Usage** - See your activity and statistics
-   - Say: "show my usage" or "dashboard"
-   - I'll send you a link to your personal dashboard
-
-I understand natural language and use AI for everything!"""
-
-            response_ai = client_openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""You are a helpful Slack bot assistant. Answer the user's question in a friendly way.
-
-{bot_capabilities}
-
-IMPORTANT: Always include a brief mention of your capabilities in your response, even for casual questions like "how are you" or "hello". 
-
-For example:
-- "How are you?" → "I'm doing great! I'm here to help you write code and manage PRs. I can create PRs, merge them, revert them, and show you your usage stats. What can I help you build today?"
-- "Hello" → "Hey there! 👋 I'm a bot that writes code for you and manages GitHub PRs. Need help creating something? Or want to see your dashboard?"
-- "What's up?" → "Not much! Ready to help you with code. I can create PRs, merge them, revert changes, or show you your activity. What are you working on?"
-
-Always be conversational but make sure to highlight what you can do. Use Slack markdown formatting."""
-                    },
-                    {
-                        "role": "user",
-                        "content": message_text
-                    }
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            
-            response = f"<@{user_id}> {response_ai.choices[0].message.content}"
-            
-        except Exception as e:
-            logger.error(f"Error generating AI response: {e}")
-            # Fallback to simple help text
-            response = f"""Hi <@{user_id}>! 🤖
-
-*What I Can Do:*
-
-📝 **Write Code for You**
-• I generate actual code using AI
-• I understand your codebase
-
-🚀 **Create PRs**
-• `create a PR to add login page`
-
-✅ **Merge PRs**
-• `merge PR 123`
-
-↩️ **Unmerge PRs**
-• `revert PR 45`
-
-Try: "create a PR for [your idea]" and I'll show you the code!"""
-        
-        # Send response in the same thread if applicable
-        say(
-            text=response,
-            thread_ts=thread_ts
-        )
-        
+        # CREATE_REPO, VIEW_USAGE, and GENERAL are handled earlier (before repo check)
         logger.info("Response sent successfully")
         
     except Exception as e:
@@ -1625,6 +1780,7 @@ def handle_make_pr_button_click(ack, body, client, logger):
                 )
             # Clean up now
             del pr_conversations[thread_ts]
+            _save_pr_conversations()  # Save after cleanup
             return
         
         # Send acknowledgment
@@ -1725,6 +1881,7 @@ Please try again or check the logs for details.
         
         # Clean up the conversation
         del pr_conversations[thread_ts]
+        _save_pr_conversations()  # Save after cleanup
         logger.info(f"Cleaned up conversation for thread {thread_ts}")
         
     except Exception as e:

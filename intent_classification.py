@@ -123,10 +123,13 @@ def classify_command(message_text: str) -> Dict:
     Returns:
         dict with command type and parameters:
         {
-            "command": "CREATE_PR" | "MERGE_PR" | "REVERT_PR" | "REFINE" | "GENERAL",
+            "command": "CREATE_PR" | "MERGE_PR" | "REVERT_PR" | "CREATE_REPO" | "VIEW_USAGE" | "REFINE" | "GENERAL",
             "task_description": str (for CREATE_PR),
             "pr_number": str (for MERGE_PR, REVERT_PR),
-            "merge_method": "merge" | "squash" | "rebase" (for MERGE_PR)
+            "merge_method": "merge" | "squash" | "rebase" (for MERGE_PR),
+            "repo_name": str (for CREATE_REPO),
+            "description": str (for CREATE_REPO, optional),
+            "private": bool (for CREATE_REPO, default False)
         }
     """
     try:
@@ -163,20 +166,27 @@ Classify user commands into these categories and extract parameters:
    Examples: "revert PR 123", "unmerge #45", "revert 12"
    Extract: pr_number (just the number)
 
-5. VIEW_USAGE - User wants to view their usage statistics or dashboard
+5. CREATE_REPO - User wants to create a new GitHub repository
+   Examples: "create a new repo called my-app", "make a repository named test-project", "new repo my-project", "create empty repo foo-bar", "spin up a new repository", "initialize a repo called demo"
+   Extract: repo_name (the name of the repository to create), description (optional description), private (boolean, true if user says private)
+   
+6. VIEW_USAGE - User wants to view their usage statistics or dashboard
    Examples: "show my usage", "view stats", "dashboard", "my activity", "usage report"
    No parameters needed
 
-6. GENERAL - General question or conversation (NOT a coding task)
+7. GENERAL - General question or conversation (NOT a coding task)
    Examples: "what can you do?", "help", "hello", "how are you"
    No parameters needed
 
 Respond with ONLY valid JSON in this format:
 {
-    "command": "CREATE_PR" | "MERGE_PR" | "REVERT_PR" | "VIEW_USAGE" | "REFINE" | "GENERAL",
+    "command": "CREATE_PR" | "MERGE_PR" | "REVERT_PR" | "CREATE_REPO" | "VIEW_USAGE" | "REFINE" | "GENERAL",
     "task_description": "extracted description" (only for CREATE_PR),
     "pr_number": "123" (only for MERGE_PR or REVERT_PR, number as string),
-    "merge_method": "merge" | "squash" | "rebase" (only for MERGE_PR, default "merge")
+    "merge_method": "merge" | "squash" | "rebase" (only for MERGE_PR, default "merge"),
+    "repo_name": "my-repo-name" (only for CREATE_REPO),
+    "description": "optional description" (only for CREATE_REPO, optional),
+    "private": true | false (only for CREATE_REPO, default false)
 }
 
 Examples:
@@ -187,6 +197,9 @@ Examples:
 "merge PR 123" → {"command": "MERGE_PR", "pr_number": "123", "merge_method": "merge"}
 "merge #45 with squash" → {"command": "MERGE_PR", "pr_number": "45", "merge_method": "squash"}
 "revert PR 12" → {"command": "REVERT_PR", "pr_number": "12"}
+"create a new repo called my-app" → {"command": "CREATE_REPO", "repo_name": "my-app", "private": false}
+"make a private repository named secret-project" → {"command": "CREATE_REPO", "repo_name": "secret-project", "private": true}
+"new repo test-project for testing stuff" → {"command": "CREATE_REPO", "repo_name": "test-project", "description": "for testing stuff", "private": false}
 "show my usage" → {"command": "VIEW_USAGE"}
 "dashboard" → {"command": "VIEW_USAGE"}
 "what can you do?" → {"command": "GENERAL"}
@@ -278,6 +291,23 @@ def classify_command_with_regex(message_text: str) -> Dict:
             return {
                 "command": "CREATE_PR",
                 "task_description": task_description or "No specific task description provided"
+            }
+    
+    # Check for CREATE_REPO
+    repo_patterns = [
+        r'(?:create|make|new|spin\s+up|initialize|init)\s+(?:a\s+)?(?:new\s+)?(?:empty\s+)?(?:repo(?:sitory)?)\s+(?:called\s+|named\s+)?([a-zA-Z0-9_-]+)',
+        r'(?:new|create)\s+(?:a\s+)?(?:github\s+)?repo(?:sitory)?\s+([a-zA-Z0-9_-]+)',
+    ]
+    for pattern in repo_patterns:
+        match = re.search(pattern, clean_text, re.IGNORECASE)
+        if match:
+            repo_name = match.group(1)
+            is_private = bool(re.search(r'\bprivate\b', clean_text, re.IGNORECASE))
+            logger.info(f"🔁 Fallback: CREATE_REPO detected - {repo_name}")
+            return {
+                "command": "CREATE_REPO",
+                "repo_name": repo_name,
+                "private": is_private
             }
     
     # Check for VIEW_USAGE
