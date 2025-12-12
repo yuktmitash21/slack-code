@@ -317,6 +317,56 @@ class GitHubPRHelper:
         logger.info(f"Generated branch name: {branch_name} (from task: {task_description[:50]})")
         return branch_name
     
+    def _initialize_empty_repo(self):
+        """
+        Initialize an empty repository with a README file.
+        
+        Returns:
+            dict with success status and the SHA of the initial commit
+        """
+        try:
+            default_branch = self.repo.default_branch or "main"
+            logger.info(f"Initializing empty repository with default branch: {default_branch}")
+            
+            readme_content = f"""# {self.repo.name}
+
+Welcome to {self.repo.name}!
+
+This repository was automatically initialized by the Slack Bot.
+
+---
+*Created automatically by Slack Bot 🤖*
+"""
+            
+            # Create the initial README file (this creates the default branch)
+            result = self.repo.create_file(
+                path="README.md",
+                message="🤖 Initial commit: Initialize repository",
+                content=readme_content,
+                branch=default_branch
+            )
+            
+            logger.info(f"✅ Repository initialized with initial commit: {result['commit'].sha}")
+            
+            return {
+                "success": True,
+                "sha": result['commit'].sha,
+                "branch": default_branch
+            }
+            
+        except GithubException as e:
+            logger.error(f"Failed to initialize repository: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to initialize repository: {e.data.get('message', str(e))}"
+            }
+        except Exception as e:
+            logger.error(f"Error initializing repository: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
     def create_random_pr(self, task_description="", thread_context=None, codebase_context=None, cached_files=None):
         """
         Create a random pull request to the repository
@@ -336,7 +386,25 @@ class GitHubPRHelper:
             
             # Get the default branch
             default_branch = self.repo.default_branch
-            base_sha = self.repo.get_branch(default_branch).commit.sha
+            
+            # Try to get the base SHA - handle empty repos
+            try:
+                base_sha = self.repo.get_branch(default_branch).commit.sha
+            except GithubException as e:
+                if e.status == 404 and "Branch not found" in str(e.data):
+                    # Repository is empty - initialize it first
+                    logger.info("📦 Repository is empty, initializing with initial commit...")
+                    init_result = self._initialize_empty_repo()
+                    if not init_result["success"]:
+                        return {
+                            "success": False,
+                            "error": f"Repository is empty and could not be initialized: {init_result.get('error')}"
+                        }
+                    base_sha = init_result["sha"]
+                    default_branch = init_result["branch"]
+                    logger.info(f"✅ Repository initialized, proceeding with PR creation")
+                else:
+                    raise
             
             logger.info(f"Creating branch {branch_name} from {default_branch}")
             

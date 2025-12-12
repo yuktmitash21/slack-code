@@ -283,6 +283,116 @@ class GitHubAuthManager:
                 "error": str(e)
             }
     
+    def validate_repo_access(self, slack_user_id: str, repo: str) -> Dict:
+        """
+        Validate that a user has access to a GitHub repository
+        
+        Args:
+            slack_user_id: Slack user ID
+            repo: Repository in format "owner/repo"
+            
+        Returns:
+            Dict with:
+                - success: bool
+                - error: str (if failed)
+                - repo_info: dict with repo details (if success)
+                - permissions: dict with user permissions (if success)
+        """
+        try:
+            from github import Github, GithubException
+            
+            # Get user's token
+            token = self.get_user_token(slack_user_id)
+            if not token:
+                return {
+                    "success": False,
+                    "error": "You need to connect your GitHub account first. Use `connect github` to get started."
+                }
+            
+            # Try to access the repository
+            g = Github(token)
+            
+            try:
+                github_repo = g.get_repo(repo)
+                
+                # Get permissions
+                permissions = {
+                    "admin": github_repo.permissions.admin if github_repo.permissions else False,
+                    "push": github_repo.permissions.push if github_repo.permissions else False,
+                    "pull": github_repo.permissions.pull if github_repo.permissions else False,
+                }
+                
+                # Check if user has at least push (write) access
+                if not permissions.get("push"):
+                    return {
+                        "success": False,
+                        "error": f"You don't have write access to `{repo}`. You need push/write permissions to create PRs.\n\n"
+                                f"Your permissions: {'Read only' if permissions.get('pull') else 'No access'}\n\n"
+                                f"Ask the repository owner to add you as a collaborator with write access."
+                    }
+                
+                # Success - user has write access
+                repo_info = {
+                    "full_name": github_repo.full_name,
+                    "name": github_repo.name,
+                    "owner": github_repo.owner.login,
+                    "private": github_repo.private,
+                    "default_branch": github_repo.default_branch,
+                    "url": github_repo.html_url,
+                    "description": github_repo.description or "No description",
+                }
+                
+                logger.info(f"User {slack_user_id} validated access to {repo}: permissions={permissions}")
+                
+                return {
+                    "success": True,
+                    "repo_info": repo_info,
+                    "permissions": permissions
+                }
+                
+            except GithubException as e:
+                if e.status == 404:
+                    return {
+                        "success": False,
+                        "error": f"Repository `{repo}` not found.\n\n"
+                                f"Please check:\n"
+                                f"• The repository name is correct (format: `owner/repository`)\n"
+                                f"• The repository exists\n"
+                                f"• You have access to it (if it's private)"
+                    }
+                elif e.status == 401:
+                    return {
+                        "success": False,
+                        "error": "Your GitHub token has expired or is invalid. Please reconnect with `connect github`."
+                    }
+                elif e.status == 403:
+                    return {
+                        "success": False,
+                        "error": f"Access forbidden to `{repo}`. This could be due to:\n"
+                                f"• Repository access restrictions\n"
+                                f"• Rate limiting\n"
+                                f"• Organization policies\n\n"
+                                f"Try again in a few minutes or contact the repository owner."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"GitHub API error: {e.data.get('message', str(e))}"
+                    }
+                    
+        except ImportError:
+            logger.error("PyGithub not installed")
+            return {
+                "success": False,
+                "error": "GitHub library not available. Please contact the bot administrator."
+            }
+        except Exception as e:
+            logger.error(f"Error validating repo access: {e}")
+            return {
+                "success": False,
+                "error": f"Error checking repository: {str(e)}"
+            }
+    
     def set_user_repo(self, slack_user_id: str, repo: str, channel_id: Optional[str] = None):
         """
         Set a user's GitHub repository for a specific channel

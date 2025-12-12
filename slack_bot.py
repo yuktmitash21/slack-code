@@ -743,11 +743,15 @@ def handle_pr_conversation(
             _record_pr_creation(conversation_key, result.get("pr_number"), processing_time_ms)
         _send_pr_result(result, pr_conversations[conversation_key]["initial_task"], say, thread_ts, stored_user_id)
         
-        # Clean up conversation (button can still be clicked if this was triggered by text)
-        # Mark as complete so button handler knows it's already created
-        pr_conversations[conversation_key]["pr_created"] = True
-        pr_conversations[conversation_key]["pr_result"] = result
-        _save_pr_conversations()  # Save after PR creation
+        # Only mark as complete on SUCCESS - allow retries on failure
+        if result.get("success"):
+            pr_conversations[conversation_key]["pr_created"] = True
+            pr_conversations[conversation_key]["pr_result"] = result
+            _save_pr_conversations()  # Save after successful PR creation
+        else:
+            # Keep conversation for retry, but save the error
+            pr_conversations[conversation_key]["last_error"] = result.get("error")
+            _save_pr_conversations()
         return
     
     # Send initial message for new conversations
@@ -1128,11 +1132,38 @@ The PR is ready for review! 🎉"""
 *Task:* {task_description}
 *Error:* {error_msg}
 
-Please check the logs and try again.
-"""
+You can retry by clicking the button below or saying "make pr" again."""
+            
+            # Add retry button on failure
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": response
+                    }
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "🔄 Retry PR Creation",
+                                "emoji": True
+                            },
+                            "style": "primary",
+                            "value": thread_ts,
+                            "action_id": "make_pr_button"
+                        }
+                    ]
+                }
+            ]
             
             say(
                 text=response,
+                blocks=blocks,
                 thread_ts=thread_ts
             )
     except Exception as e:
@@ -1577,10 +1608,44 @@ def handle_app_mention(event, client, say, logger):
             repo_match = re.search(r'set\s+repo\s+([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)', message_text, re.IGNORECASE)
             if repo_match:
                 repo = repo_match.group(1)
-                auth_manager.set_user_repo(user_id, repo, channel_id)
-                user_info = auth_manager.get_user_info(user_id)
+                
+                # Send "checking" message
                 say(
-                    text=f"<@{user_id}> ✅ Repository set for this channel: `{repo}`\n\n💡 *Pro tip:* You can set different repos in different channels!\n\nYou're all set! Now you can:\n• Create PRs: _\"create a login page\"_\n• Merge PRs: _\"merge PR 123\"_\n• View stats: _\"show my usage\"_",
+                    text=f"<@{user_id}> 🔍 Checking access to `{repo}`...",
+                    thread_ts=thread_ts
+                )
+                
+                # Validate repository access before setting
+                validation = auth_manager.validate_repo_access(user_id, repo)
+                
+                if not validation.get("success"):
+                    say(
+                        text=f"<@{user_id}> ❌ *Cannot set repository*\n\n{validation.get('error')}",
+                        thread_ts=thread_ts
+                    )
+                    return
+                
+                # Repository is valid and user has write access - set it
+                auth_manager.set_user_repo(user_id, repo, channel_id)
+                
+                # Get repo info for nice confirmation message
+                repo_info = validation.get("repo_info", {})
+                permissions = validation.get("permissions", {})
+                
+                permission_level = "Admin" if permissions.get("admin") else "Write"
+                repo_type = "🔒 Private" if repo_info.get("private") else "🌐 Public"
+                
+                say(
+                    text=f"<@{user_id}> ✅ *Repository set for this channel!*\n\n"
+                         f"📂 *Repo:* `{repo_info.get('full_name', repo)}`\n"
+                         f"{repo_type}\n"
+                         f"🔑 *Your access:* {permission_level}\n"
+                         f"🌿 *Default branch:* `{repo_info.get('default_branch', 'main')}`\n\n"
+                         f"💡 *Pro tip:* You can set different repos in different channels!\n\n"
+                         f"You're all set! Now you can:\n"
+                         f"• Create PRs: _\"create a login page\"_\n"
+                         f"• Merge PRs: _\"merge PR 123\"_\n"
+                         f"• View stats: _\"show my usage\"_",
                     thread_ts=thread_ts
                 )
             else:
@@ -1870,16 +1935,47 @@ You can now review and merge the PR!"""
 *Task:* {conv['initial_task']}
 *Error:* {result['error']}
 
-Please try again or check the logs for details.
-"""
+You can retry by clicking the button below."""
+            
+            # Add retry button on failure
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": response
+                    }
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "🔄 Retry PR Creation",
+                                "emoji": True
+                            },
+                            "style": "primary",
+                            "value": thread_ts,
+                            "action_id": "make_pr_button"
+                        }
+                    ]
+                }
+            ]
             
             client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_ts,
-                text=response
+                text=response,
+                blocks=blocks
             )
+            
+            # DON'T delete conversation on failure - allow retry!
+            logger.info(f"PR creation failed for thread {thread_ts}, keeping conversation for retry")
+            return
         
-        # Clean up the conversation
+        # Clean up the conversation only on SUCCESS
         del pr_conversations[thread_ts]
         _save_pr_conversations()  # Save after cleanup
         logger.info(f"Cleaned up conversation for thread {thread_ts}")
