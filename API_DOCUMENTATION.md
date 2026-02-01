@@ -38,9 +38,51 @@ All API endpoints (except `/health`) require authentication via an API key.
    X-API-Key: your-generated-api-key-here
    ```
 
+### Default GitHub Configuration (Optional)
+
+Set these environment variables to avoid passing GitHub credentials with every request:
+
+```env
+# Default GitHub repo (owner/repo format)
+DEFAULT_GITHUB_REPO=your-username/your-repo
+
+# Default GitHub personal access token
+DEFAULT_GITHUB_TOKEN=ghp_your_token_here
+```
+
+With these set, you can make requests without the `github` object:
+
+```bash
+# No github config needed - uses environment defaults
+curl -X POST .../api/v1/chat \
+  -H "X-API-Key: your-api-key" \
+  -d '{"message": "Add a login page"}'
+
+# Can still override per-request if needed
+curl -X POST .../api/v1/chat \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "message": "Add a login page",
+    "github": {"repo": "other/repo", "token": "ghp_different_token"}
+  }'
+```
+
 ---
 
 ## Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/health` | Health check (no auth required) |
+| `POST` | `/api/v1/chat` | Send message, get AI-generated changeset |
+| `POST` | `/api/v1/pr` | Create a PR from thread's changeset |
+| `POST` | `/api/v1/pr/merge` | Merge an existing PR |
+| `POST` | `/api/v1/threads` | Create new conversation thread |
+| `GET` | `/api/v1/threads` | List all threads |
+| `GET` | `/api/v1/threads/{id}` | Get thread history |
+| `DELETE` | `/api/v1/threads/{id}` | Delete a thread |
+
+---
 
 ### Health Check
 
@@ -289,7 +331,148 @@ X-API-Key: your-api-key
 
 ---
 
+### Create a Pull Request
+
+Create a GitHub PR from a thread's cached changeset.
+
+```
+POST /api/v1/pr
+```
+
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: your-api-key
+```
+
+**Request Body:**
+```json
+{
+    "thread_id": "550e8400-e29b-41d4-a716-446655440000",
+    "github": {
+        "repo": "owner/repo-name",
+        "token": "ghp_your_github_token"
+    },
+    "title": "Optional custom PR title",
+    "description": "Optional custom PR description"
+}
+```
+
+**Parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `thread_id` | string | Yes | Thread ID from a previous `/chat` response |
+| `github.repo` | string | Yes | Repository in `owner/repo` format |
+| `github.token` | string | Yes | GitHub personal access token with repo write access |
+| `title` | string | No | Custom PR title (auto-generated if omitted) |
+| `description` | string | No | Custom PR description |
+
+**Response (Success):**
+```json
+{
+    "success": true,
+    "pr_number": 123,
+    "pr_url": "https://github.com/owner/repo/pull/123",
+    "branch_name": "ai-generated-abc123",
+    "changes": "3 file(s)",
+    "processing_time_ms": 2500
+}
+```
+
+---
+
+### Merge a Pull Request
+
+Merge an existing GitHub PR.
+
+```
+POST /api/v1/pr/merge
+```
+
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: your-api-key
+```
+
+**Request Body:**
+```json
+{
+    "pr_number": 123,
+    "github": {
+        "repo": "owner/repo-name",
+        "token": "ghp_your_github_token"
+    },
+    "merge_method": "squash"
+}
+```
+
+**Parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pr_number` | integer | Yes | PR number to merge |
+| `github.repo` | string | Yes | Repository in `owner/repo` format |
+| `github.token` | string | Yes | GitHub token with repo write access |
+| `merge_method` | string | No | `merge`, `squash`, or `rebase` (default: `merge`) |
+
+**Response (Success):**
+```json
+{
+    "success": true,
+    "pr_number": 123,
+    "pr_title": "Add login page",
+    "branch_name": "ai-generated-abc123",
+    "merge_method": "squash",
+    "pr_url": "https://github.com/owner/repo/pull/123"
+}
+```
+
+---
+
 ## Examples
+
+### Full Workflow: Chat → PR → Merge (cURL)
+
+```bash
+# Step 1: Generate a changeset
+CHAT_RESPONSE=$(curl -s -X POST https://your-ngrok-url.ngrok-free.app/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{"message": "Create a login page with email and password"}')
+
+echo "$CHAT_RESPONSE" | jq '.response'  # Review the changeset
+THREAD_ID=$(echo "$CHAT_RESPONSE" | jq -r '.thread_id')
+
+# Step 2: Create the PR (after reviewing the changeset)
+PR_RESPONSE=$(curl -s -X POST https://your-ngrok-url.ngrok-free.app/api/v1/pr \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d "{
+    \"thread_id\": \"$THREAD_ID\",
+    \"github\": {
+      \"repo\": \"your-username/your-repo\",
+      \"token\": \"ghp_your_github_token\"
+    }
+  }")
+
+echo "$PR_RESPONSE" | jq '.pr_url'  # Get the PR URL
+PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.pr_number')
+
+# Step 3: Merge the PR (after review)
+curl -X POST https://your-ngrok-url.ngrok-free.app/api/v1/pr/merge \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d "{
+    \"pr_number\": $PR_NUMBER,
+    \"github\": {
+      \"repo\": \"your-username/your-repo\",
+      \"token\": \"ghp_your_github_token\"
+    },
+    \"merge_method\": \"squash\"
+  }"
+```
 
 ### Basic Chat (cURL)
 

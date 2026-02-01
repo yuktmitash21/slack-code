@@ -98,6 +98,32 @@ def get_ai_generator():
     return get_ai_code_generator()
 
 
+def get_github_config(request_config: Optional[Dict] = None) -> tuple:
+    """
+    Get GitHub repo and token, with fallback to environment defaults.
+    
+    Priority:
+    1. Request body (github.repo, github.token)
+    2. Environment variables (DEFAULT_GITHUB_REPO, DEFAULT_GITHUB_TOKEN)
+    
+    Returns:
+        (repo, token) tuple, either or both can be None
+    """
+    # Start with environment defaults
+    default_repo = os.environ.get("DEFAULT_GITHUB_REPO")
+    default_token = os.environ.get("DEFAULT_GITHUB_TOKEN")
+    
+    # Override with request values if provided
+    if request_config:
+        repo = request_config.get("repo") or default_repo
+        token = request_config.get("token") or default_token
+    else:
+        repo = default_repo
+        token = default_token
+    
+    return repo, token
+
+
 def generate_ai_response(
     message: str,
     thread_id: Optional[str] = None,
@@ -441,13 +467,8 @@ def chat():
                 }
                 logger.info(f"Image received: {image_data['format']}, {len(image_data['data'])} chars")
         
-        # Handle GitHub context
-        github_repo = None
-        github_token = None
-        if "github" in data:
-            gh = data["github"]
-            github_repo = gh.get("repo")
-            github_token = gh.get("token")
+        # Handle GitHub context (with env var fallback)
+        github_repo, github_token = get_github_config(data.get("github"))
         
         # Create thread if not provided
         if not thread_id:
@@ -545,6 +566,224 @@ def chat_stream():
     return chat()
 
 
+@api_bp.route('/pr', methods=['POST'])
+@require_api_key
+def create_pr():
+    """
+    Create a GitHub Pull Request from a thread's cached changeset.
+    
+    Request body:
+    {
+        "thread_id": "uuid-of-thread-with-changeset",
+        "github": {
+            "repo": "owner/repo-name",
+            "token": "github-personal-access-token"
+        },
+        "title": "Optional PR title (auto-generated if omitted)",
+        "description": "Optional PR description"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "pr_number": 123,
+        "pr_url": "https://github.com/owner/repo/pull/123",
+        "branch_name": "ai-generated-abc123",
+        "changes": "Created 2 files, modified 1 file"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "error": "Request body required",
+                "message": "Send JSON with 'thread_id' and 'github' fields"
+            }), 400
+        
+        thread_id = data.get("thread_id")
+        if not thread_id:
+            return jsonify({
+                "error": "thread_id required",
+                "message": "Provide the thread_id from a previous /chat response"
+            }), 400
+        
+        if thread_id not in api_threads:
+            return jsonify({
+                "error": "Thread not found",
+                "message": f"Thread {thread_id} does not exist"
+            }), 404
+        
+        # Get GitHub config (with env var fallback)
+        github_repo, github_token = get_github_config(data.get("github"))
+        
+        if not github_repo or not github_token:
+            return jsonify({
+                "error": "Missing GitHub credentials",
+                "message": "Provide 'github.repo' and 'github.token' in request, or set DEFAULT_GITHUB_REPO and DEFAULT_GITHUB_TOKEN environment variables"
+            }), 400
+        
+        # Get cached files from thread
+        thread = api_threads[thread_id]
+        cached_files = thread.get("cached_files", [])
+        
+        if not cached_files:
+            return jsonify({
+                "error": "No changeset found",
+                "message": "This thread has no cached files. Send a /chat message first to generate a changeset."
+            }), 400
+        
+        # Get conversation context for PR description
+        messages = thread.get("messages", [])
+        conversation_summary = ""
+        for msg in messages:
+            if msg.get("role") == "user":
+                conversation_summary += msg.get("content", "") + "\n"
+        
+        # Create the PR
+        from github_helper import GitHubPRHelper
+        
+        try:
+            helper = GitHubPRHelper(
+                github_token=github_token,
+                repo_name=github_repo,
+                use_ai=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to create GitHub helper: {e}")
+            return jsonify({
+                "error": "GitHub connection failed",
+                "message": str(e)
+            }), 400
+        
+        # Use thread_id as context for unique branch naming
+        pr_title = data.get("title")
+        pr_description = data.get("description")
+        
+        logger.info(f"Creating PR with {len(cached_files)} cached files")
+        
+        start_time = time.time()
+        result = helper.create_random_pr(
+            conversation_summary,
+            thread_context=thread_id,
+            codebase_context=thread.get("codebase_context"),
+            cached_files=cached_files
+        )
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        
+        if result.get("success"):
+            # Mark thread as having a PR
+            thread["pr_created"] = True
+            thread["pr_result"] = {
+                "pr_number": result.get("pr_number"),
+                "pr_url": result.get("pr_url"),
+                "branch_name": result.get("branch_name")
+            }
+            thread["updated_at"] = datetime.utcnow().isoformat()
+            _save_api_threads()
+            
+            return jsonify({
+                "success": True,
+                "pr_number": result.get("pr_number"),
+                "pr_url": result.get("pr_url"),
+                "branch_name": result.get("branch_name"),
+                "changes": result.get("changes", f"{len(cached_files)} file(s)"),
+                "processing_time_ms": processing_time_ms
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result.get("error", "PR creation failed")
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error creating PR: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@api_bp.route('/pr/merge', methods=['POST'])
+@require_api_key
+def merge_pr():
+    """
+    Merge a GitHub Pull Request.
+    
+    Request body:
+    {
+        "pr_number": 123,
+        "github": {
+            "repo": "owner/repo-name",
+            "token": "github-personal-access-token"
+        },
+        "merge_method": "merge"  // or "squash", "rebase"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "pr_number": 123,
+        "pr_title": "Add login page",
+        "merge_method": "merge",
+        "pr_url": "https://github.com/owner/repo/pull/123"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+        
+        pr_number = data.get("pr_number")
+        if not pr_number:
+            return jsonify({"error": "pr_number required"}), 400
+        
+        # Get GitHub config (with env var fallback)
+        github_repo, github_token = get_github_config(data.get("github"))
+        
+        if not github_repo or not github_token:
+            return jsonify({
+                "error": "Missing GitHub credentials",
+                "message": "Provide 'github.repo' and 'github.token' in request, or set DEFAULT_GITHUB_REPO and DEFAULT_GITHUB_TOKEN environment variables"
+            }), 400
+        
+        merge_method = data.get("merge_method", "merge")
+        if merge_method not in ["merge", "squash", "rebase"]:
+            return jsonify({"error": "merge_method must be 'merge', 'squash', or 'rebase'"}), 400
+        
+        from github_helper import GitHubPRHelper
+        
+        helper = GitHubPRHelper(
+            github_token=github_token,
+            repo_name=github_repo,
+            use_ai=False
+        )
+        
+        result = helper.merge_pr(pr_number, merge_method)
+        
+        if result.get("success"):
+            return jsonify({
+                "success": True,
+                "pr_number": result.get("pr_number"),
+                "pr_title": result.get("pr_title"),
+                "branch_name": result.get("branch_name"),
+                "merge_method": result.get("merge_method"),
+                "pr_url": result.get("pr_url")
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result.get("error")
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error merging PR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 # ============================================================================
 # Helper to register blueprint with existing Flask app
 # ============================================================================
@@ -553,7 +792,9 @@ def register_api(flask_app):
     """Register the API blueprint with a Flask app."""
     flask_app.register_blueprint(api_bp)
     logger.info("📡 API endpoints registered at /api/v1/")
-    logger.info("   POST /api/v1/chat - Send message, get response")
+    logger.info("   POST /api/v1/chat - Send message, get AI changeset")
+    logger.info("   POST /api/v1/pr - Create PR from thread's changeset")
+    logger.info("   POST /api/v1/pr/merge - Merge a PR")
     logger.info("   POST /api/v1/threads - Create conversation thread")
     logger.info("   GET  /api/v1/threads - List all threads")
     logger.info("   GET  /api/v1/threads/<id> - Get thread history")
