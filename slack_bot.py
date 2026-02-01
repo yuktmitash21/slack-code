@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, request
+from flask_cors import CORS
 from stats_tracker import log_pr_creation, mark_pr_merged
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -38,8 +39,13 @@ app = App(
     signing_secret=os.environ.get("SLACK_SIGNING_SECRET")
 )
 
-# Initialize Flask app for OAuth callbacks
+# Initialize Flask app for OAuth callbacks and API
 flask_app = Flask(__name__)
+CORS(flask_app)  # Enable CORS for API access
+
+# Register API endpoints
+from api_server import register_api
+register_api(flask_app)
 
 # Store ongoing conversations for PR creation
 # Format: {thread_ts: conversation_data}
@@ -2351,10 +2357,15 @@ if __name__ == "__main__":
         flask_thread.start()
         
         logger.info("=" * 60)
-        logger.info("🚀 Slack Bot with GitHub OAuth")
+        logger.info("🚀 Slack Bot with GitHub OAuth + REST API")
         logger.info("=" * 60)
         logger.info("📍 OAuth Callback: http://localhost:5050/auth/github/callback")
         logger.info("🏥 Health Check: http://localhost:5050/health")
+        logger.info("📡 REST API: http://localhost:5050/api/v1/")
+        logger.info("   POST /api/v1/chat - Send message, get AI response")
+        logger.info("   POST /api/v1/threads - Create conversation thread")
+        logger.info("   GET  /api/v1/threads - List threads")
+        logger.info("🔑 API Key: Set BOT_API_KEY env variable for API access")
         logger.info("⚡️ Slack Bot: Starting Socket Mode...")
         logger.info("=" * 60)
             

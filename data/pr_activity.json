@@ -121,13 +121,13 @@
   },
   {
     "pr_number": 10,
-    "channel_id": "C09UL4V09CM",
-    "channel_name": "#testing",
-    "created_at": "2025-11-23T08:00:31.647845+00:00",
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-12T22:29:57.997726+00:00",
     "merged": true,
-    "merged_at": "2025-11-23T08:00:35.796966+00:00",
-    "thread_ts": "1763884710.620879",
-    "processing_time_ms": 4762
+    "merged_at": "2025-12-12T22:30:02.500517+00:00",
+    "thread_ts": "1765578104.215629",
+    "processing_time_ms": 4950
   },
   {
     "pr_number": 18,
@@ -158,5 +158,135 @@
     "merged_at": "2025-11-28T18:49:24.856459+00:00",
     "thread_ts": "1764355660.344879",
     "processing_time_ms": 6454
+  },
+  {
+    "pr_number": 65,
+    "channel_id": "1764356714.420569",
+    "channel_name": "1764356714.420569",
+    "created_at": "2025-11-28T19:05:23.489283+00:00",
+    "merged": false,
+    "merged_at": null,
+    "thread_ts": "1764356714.420569",
+    "processing_time_ms": 4376
+  },
+  {
+    "pr_number": 1,
+    "channel_id": "C0A32DZ28TZ",
+    "channel_name": "#testing_user_2",
+    "created_at": "2025-12-14T19:55:55.477135+00:00",
+    "merged": true,
+    "merged_at": "2025-12-14T19:58:13.267227+00:00",
+    "thread_ts": "1765741736.438429",
+    "processing_time_ms": 6258
+  },
+  {
+    "pr_number": 2,
+    "channel_id": "C0A32DZ28TZ",
+    "channel_name": "#testing_user_2",
+    "created_at": "2025-12-14T20:00:50.696042+00:00",
+    "merged": true,
+    "merged_at": "2025-12-14T20:13:21.294365+00:00",
+    "thread_ts": "1765741736.438429",
+    "processing_time_ms": 4864
+  },
+  {
+    "pr_number": 4,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-12T21:56:03.141247+00:00",
+    "merged": true,
+    "merged_at": "2025-12-12T21:56:09.377386+00:00",
+    "thread_ts": "1765568415.636629",
+    "processing_time_ms": 6922
+  },
+  {
+    "pr_number": 6,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-12T22:22:27.322085+00:00",
+    "merged": true,
+    "merged_at": "2025-12-12T22:22:31.603739+00:00",
+    "thread_ts": "1765578104.215629",
+    "processing_time_ms": 8169
+  },
+  {
+    "pr_number": 7,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-12T22:24:01.769141+00:00",
+    "merged": true,
+    "merged_at": "2025-12-12T22:24:06.766794+00:00",
+    "thread_ts": "1765578104.215629",
+    "processing_time_ms": 4960
+  },
+  {
+    "pr_number": 8,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-12T22:25:32.211938+00:00",
+    "merged": true,
+    "merged_at": "2025-12-12T22:25:36.938486+00:00",
+    "thread_ts": "1765578104.215629",
+    "processing_time_ms": 6607
+  },
+  {
+    "pr_number": 9,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-12T22:28:47.817117+00:00",
+    "merged": true,
+    "merged_at": "2025-12-12T22:28:51.618631+00:00",
+    "thread_ts": "1765578104.215629",
+    "processing_time_ms": 6504
+  },
+  {
+    "pr_number": 3,
+    "channel_id": "C0A32DZ28TZ",
+    "channel_name": "#testing_user_2",
+    "created_at": "2025-12-14T20:20:55.367408+00:00",
+    "merged": false,
+    "merged_at": null,
+    "thread_ts": "1765741736.438429",
+    "processing_time_ms": 4690
+  },
+  {
+    "pr_number": 5,
+    "channel_id": "C0A20LAT3UJ",
+    "channel_name": "#yukt-test-bed",
+    "created_at": "2025-12-22T02:21:32.164711+00:00",
+    "merged": true,
+    "merged_at": "2025-12-22T02:22:14.975619+00:00",
+    "thread_ts": "1766369757.108039",
+    "processing_time_ms": 44901
+  },
+  {
+    "pr_number": 11,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-24T02:24:09.089494+00:00",
+    "merged": true,
+    "merged_at": "2025-12-24T02:24:14.948675+00:00",
+    "thread_ts": "1766542535.396209",
+    "processing_time_ms": 9804
+  },
+  {
+    "pr_number": 12,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2025-12-24T02:31:11.254368+00:00",
+    "merged": true,
+    "merged_at": "2025-12-24T02:31:18.439022+00:00",
+    "thread_ts": "1766542535.396209",
+    "processing_time_ms": 6356
+  },
+  {
+    "pr_number": 13,
+    "channel_id": "C0A0BP9PD61",
+    "channel_name": "#testing-beta-user-1",
+    "created_at": "2026-01-04T20:35:28.400136+00:00",
+    "merged": false,
+    "merged_at": null,
+    "thread_ts": "1767558105.104539",
+    "processing_time_ms": 10089
   }
 ]
