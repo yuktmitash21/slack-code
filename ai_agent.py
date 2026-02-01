@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 class AICodeGenerator:
     """High-level interface for AI code generation using direct OpenAI API"""
     
+    # Models that require the Responses API instead of Chat Completions
+    RESPONSES_API_MODELS = {
+        "gpt-5-codex",
+        "codex",
+        "o3",
+        "o3-mini",
+        "o4-mini",
+        # Add other models that use Responses API as needed
+    }
+    
     def __init__(self, llm_provider: str = "openai", model_name: str = "gpt-4o"):
         """
         Initialize AI Code Generator with direct OpenAI
@@ -27,23 +37,42 @@ class AICodeGenerator:
         self.llm_provider = llm_provider
         self.model_name = model_name
         
+        # Determine which API to use based on model
+        self.use_responses_api = self._should_use_responses_api(model_name)
+        
         # Verify OpenAI API key
         import os
         if not os.environ.get("OPENAI_API_KEY"):
             logger.error("OPENAI_API_KEY not found in environment")
             raise ValueError("OPENAI_API_KEY required for code generation")
         
-        logger.info(f"✅ AI Code Generator initialized with {model_name}")
+        api_type = "Responses API" if self.use_responses_api else "Chat Completions API"
+        logger.info(f"✅ AI Code Generator initialized with {model_name} (using {api_type})")
+    
+    def _should_use_responses_api(self, model_name: str) -> bool:
+        """Check if the model requires the Responses API"""
+        # Check exact match
+        if model_name in self.RESPONSES_API_MODELS:
+            return True
+        # Check prefix match (e.g., "gpt-5-codex-latest")
+        for responses_model in self.RESPONSES_API_MODELS:
+            if model_name.startswith(responses_model):
+                return True
+        return False
     
     async def generate_code_for_task(self, task_description: str, 
                                      context: Optional[str] = None,
-                                     image_data: Optional[Dict] = None) -> Dict:
+                                     image_data: Optional[Dict] = None,
+                                     stream_callback: Optional[callable] = None) -> Dict:
         """
         Generate code based on task description using direct OpenAI API
         
         Args:
             task_description: Description of the coding task
             context: Optional context about the repository/project
+            image_data: Optional dict with base64 encoded image for vision models
+            stream_callback: Optional callback function called with (current_text, is_complete)
+                           for streaming updates (e.g., to update Slack messages)
             
         Returns:
             dict with generated code files and descriptions
@@ -117,29 +146,96 @@ GENERATE THE CODE IMMEDIATELY. Do not describe, just show the code."""
             
             # If image is provided, use vision API for wireframe analysis
             if image_data and self.llm_provider == "openai":
-                logger.info("Using OpenAI Vision API for wireframe analysis...")
-                return await self._generate_with_vision_openai(task_description, context, image_data)
+                # Check if model supports vision (Responses API models may not)
+                if self.use_responses_api:
+                    logger.warning(f"⚠️ Model {self.model_name} uses Responses API which may not support vision. Proceeding with text-only generation.")
+                else:
+                    logger.info("Using OpenAI Vision API for wireframe analysis...")
+                    return await self._generate_with_vision_openai(task_description, context, image_data)
             elif image_data and self.llm_provider == "anthropic":
                 logger.info("Using Anthropic Claude Vision for wireframe analysis...")
                 return await self._generate_with_vision_anthropic(task_description, context, image_data)
             
-            if image_data:
+            if image_data and not self.use_responses_api:
                 logger.warning(f"⚠️ Image data was provided but NOT using vision API! Provider: {self.llm_provider}")
             
             # Use text-based generation
             client = openai.OpenAI()
-            response = client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                max_tokens=16000  # Max for gpt-4o output
-            )
             
-            response_text = response.choices[0].message.content
-            finish_reason = response.choices[0].finish_reason
+            if self.use_responses_api:
+                # Use Responses API for codex and similar models WITH STREAMING
+                logger.info(f"Using Responses API (streaming) for model: {self.model_name}")
+                
+                stream = client.responses.create(
+                    model=self.model_name,
+                    input=f"{system_prompt}\n\n{user_prompt}",
+                    stream=True  # Enable streaming to avoid timeout on long responses
+                )
+                
+                # Collect streamed response text
+                response_chunks = []
+                chunk_count = 0
+                finish_reason = "stop"
+                last_callback_chars = 0
+                callback_interval = 500  # Call callback every 500 chars
+                
+                for event in stream:
+                    # Handle different event types from the stream
+                    if hasattr(event, 'type'):
+                        if event.type == "response.output_text.delta":
+                            # Incremental text chunk
+                            if hasattr(event, 'delta'):
+                                response_chunks.append(event.delta)
+                                chunk_count += 1
+                                
+                                # Log progress every 50 chunks
+                                if chunk_count % 50 == 0:
+                                    logger.info(f"  Received {chunk_count} chunks, {sum(len(c) for c in response_chunks)} chars so far...")
+                                
+                                # Call stream callback periodically
+                                current_chars = sum(len(c) for c in response_chunks)
+                                if stream_callback and (current_chars - last_callback_chars) >= callback_interval:
+                                    try:
+                                        current_text = "".join(response_chunks)
+                                        stream_callback(current_text, False)
+                                        last_callback_chars = current_chars
+                                    except Exception as cb_error:
+                                        logger.warning(f"Stream callback error: {cb_error}")
+                                        
+                        elif event.type == "response.completed":
+                            # Response completed
+                            if hasattr(event, 'response') and hasattr(event.response, 'stop_reason'):
+                                finish_reason = event.response.stop_reason
+                            logger.info(f"  Stream completed with {chunk_count} chunks")
+                    elif hasattr(event, 'delta'):
+                        # Fallback: some SDK versions may structure events differently
+                        response_chunks.append(str(event.delta))
+                        chunk_count += 1
+                
+                response_text = "".join(response_chunks)
+                logger.info(f"Streaming complete: {chunk_count} chunks, {len(response_text)} total chars")
+                
+                # Final callback with complete response
+                if stream_callback:
+                    try:
+                        stream_callback(response_text, True)
+                    except Exception as cb_error:
+                        logger.warning(f"Final stream callback error: {cb_error}")
+            else:
+                # Use Chat Completions API for gpt-4o and similar models
+                logger.info(f"Using Chat Completions API for model: {self.model_name}")
+                response = client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=16000  # Max for gpt-4o output
+                )
+                
+                response_text = response.choices[0].message.content
+                finish_reason = response.choices[0].finish_reason
             
             logger.info(f"OpenAI response length: {len(response_text)} chars")
             logger.info(f"Finish reason: {finish_reason}")
@@ -687,7 +783,8 @@ Generate the code NOW in the required format."""
     
     def generate_code_sync(self, task_description: str, 
                           context: Optional[str] = None,
-                          image_data: Optional[Dict] = None) -> Dict:
+                          image_data: Optional[Dict] = None,
+                          stream_callback: Optional[callable] = None) -> Dict:
         """
         Synchronous wrapper for generate_code_for_task
         
@@ -695,6 +792,8 @@ Generate the code NOW in the required format."""
             task_description: Description of the coding task
             context: Optional context about the repository/project
             image_data: Optional dict with base64 encoded image for vision models
+            stream_callback: Optional callback function called with (current_text, is_complete)
+                           for streaming updates (e.g., to update Slack messages)
             
         Returns:
             dict with generated code files and descriptions
@@ -706,7 +805,7 @@ Generate the code NOW in the required format."""
             asyncio.set_event_loop(loop)
         
         return loop.run_until_complete(
-            self.generate_code_for_task(task_description, context, image_data)
+            self.generate_code_for_task(task_description, context, image_data, stream_callback)
         )
 
 

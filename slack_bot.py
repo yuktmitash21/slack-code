@@ -76,10 +76,17 @@ def _save_pr_conversations():
 pr_conversations = _load_pr_conversations()
 
 
-def _generate_changeset_preview(prompt: str, context: str, github_helper_instance, image_data=None) -> dict:
+def _generate_changeset_preview(prompt: str, context: str, github_helper_instance, image_data=None, stream_callback=None) -> dict:
     """
     Generate a changeset preview using direct OpenAI API
     This shows proposed changes to the user before PR creation
+    
+    Args:
+        prompt: The prompt for code generation
+        context: Repository context
+        github_helper_instance: GitHub helper with AI generator
+        image_data: Optional image data for vision models
+        stream_callback: Optional callback(current_text, is_complete) for streaming updates
     
     Returns both the formatted response AND parsed files for caching
     """
@@ -108,7 +115,8 @@ The user can refine these changes through conversation before creating the PR.
         result = github_helper_instance.ai_generator.generate_code_sync(
             task_description=full_prompt,
             context=context,
-            image_data=image_data  # Pass image for vision API
+            image_data=image_data,  # Pass image for vision API
+            stream_callback=stream_callback  # Pass streaming callback
         )
         
         if not result.get("success"):
@@ -857,17 +865,57 @@ Rules:
         
         # Send loading message while AI generates
         loading_msg = say(
-            text=f"<@{stored_user_id}> :hourglass_flowing_sand: *Generating changeset...*\n\n Spoon AI is analyzing your request and crafting code changes..._",
+            text=f"<@{stored_user_id}> :hourglass_flowing_sand: *Generating changeset...*\n\n_Spoon AI is analyzing your request and crafting code changes..._",
             thread_ts=thread_ts
         )
         loading_ts = loading_msg.get("ts") if loading_msg else None
+        
+        # Create streaming callback to update Slack message with progress
+        last_update_time = [time.time()]  # Use list to allow mutation in closure
+        
+        def slack_stream_callback(current_text: str, is_complete: bool):
+            """Update Slack message with streaming progress"""
+            nonlocal loading_ts
+            
+            # Rate limit updates to every 2 seconds (avoid Slack API limits)
+            current_time = time.time()
+            if not is_complete and (current_time - last_update_time[0]) < 2.0:
+                return
+            
+            last_update_time[0] = current_time
+            
+            if loading_ts and client:
+                try:
+                    # Show progress indicator with character count
+                    char_count = len(current_text)
+                    if is_complete:
+                        status = "✅ *Generation complete!* Processing response..."
+                    else:
+                        # Show a preview of what's being generated
+                        status = f":hourglass_flowing_sand: *Generating...* ({char_count:,} chars)\n\n"
+                        # Show last few lines as preview (truncated)
+                        lines = current_text.strip().split('\n')
+                        preview_lines = lines[-5:] if len(lines) > 5 else lines
+                        preview = '\n'.join(preview_lines)
+                        if len(preview) > 500:
+                            preview = preview[-500:]
+                        status += f"```\n...{preview}\n```"
+                    
+                    client.chat_update(
+                        channel=channel_id,
+                        ts=loading_ts,
+                        text=f"<@{stored_user_id}> {status}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update streaming message: {e}")
         
         # Generate changeset preview using SpoonOS with vision if image is available
         ai_result = _generate_changeset_preview(
             prompt=planning_prompt,
             context=full_codebase_context,
             github_helper_instance=user_github_helper,
-            image_data=stored_image_data  # Pass image for vision API
+            image_data=stored_image_data,  # Pass image for vision API
+            stream_callback=slack_stream_callback  # Stream updates to Slack
         )
         
         if not ai_result.get("success"):
