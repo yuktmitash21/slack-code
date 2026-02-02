@@ -784,6 +784,81 @@ def merge_pr():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@api_bp.route('/pr/revert', methods=['POST'])
+@require_api_key
+def revert_pr():
+    """
+    Create a revert PR to undo a merged pull request.
+    
+    Request body:
+    {
+        "pr_number": 123,
+        "github": {
+            "repo": "owner/repo-name",
+            "token": "github-personal-access-token"
+        }
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "original_pr_number": 123,
+        "original_pr_title": "Add login page",
+        "revert_pr_number": 456,
+        "revert_pr_url": "https://github.com/owner/repo/pull/456",
+        "revert_branch_name": "revert-123"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+        
+        pr_number = data.get("pr_number")
+        if not pr_number:
+            return jsonify({"error": "pr_number required"}), 400
+        
+        # Get GitHub config (with env var fallback)
+        github_repo, github_token = get_github_config(data.get("github"))
+        
+        if not github_repo or not github_token:
+            return jsonify({
+                "error": "Missing GitHub credentials",
+                "message": "Provide 'github.repo' and 'github.token' in request, or set DEFAULT_GITHUB_REPO and DEFAULT_GITHUB_TOKEN environment variables"
+            }), 400
+        
+        from github_helper import GitHubPRHelper
+        
+        helper = GitHubPRHelper(
+            github_token=github_token,
+            repo_name=github_repo,
+            use_ai=False
+        )
+        
+        result = helper.create_revert_pr(pr_number)
+        
+        if result.get("success"):
+            return jsonify({
+                "success": True,
+                "original_pr_number": result.get("original_pr_number"),
+                "original_pr_title": result.get("original_pr_title"),
+                "original_pr_url": result.get("original_pr_url"),
+                "revert_pr_number": result.get("revert_pr_number"),
+                "revert_pr_url": result.get("revert_pr_url"),
+                "revert_branch_name": result.get("revert_branch_name")
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result.get("error")
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error reverting PR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 # ============================================================================
 # Helper to register blueprint with existing Flask app
 # ============================================================================
@@ -795,6 +870,7 @@ def register_api(flask_app):
     logger.info("   POST /api/v1/chat - Send message, get AI changeset")
     logger.info("   POST /api/v1/pr - Create PR from thread's changeset")
     logger.info("   POST /api/v1/pr/merge - Merge a PR")
+    logger.info("   POST /api/v1/pr/revert - Revert a merged PR")
     logger.info("   POST /api/v1/threads - Create conversation thread")
     logger.info("   GET  /api/v1/threads - List all threads")
     logger.info("   GET  /api/v1/threads/<id> - Get thread history")

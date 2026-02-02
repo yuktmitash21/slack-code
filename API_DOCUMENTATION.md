@@ -77,6 +77,7 @@ curl -X POST .../api/v1/chat \
 | `POST` | `/api/v1/chat` | Send message, get AI-generated changeset |
 | `POST` | `/api/v1/pr` | Create a PR from thread's changeset |
 | `POST` | `/api/v1/pr/merge` | Merge an existing PR |
+| `POST` | `/api/v1/pr/revert` | Revert a merged PR (creates revert PR) |
 | `POST` | `/api/v1/threads` | Create new conversation thread |
 | `GET` | `/api/v1/threads` | List all threads |
 | `GET` | `/api/v1/threads/{id}` | Get thread history |
@@ -428,6 +429,58 @@ X-API-Key: your-api-key
     "pr_url": "https://github.com/owner/repo/pull/123"
 }
 ```
+
+---
+
+### Revert a Pull Request
+
+Create a revert PR to undo a previously merged PR.
+
+```
+POST /api/v1/pr/revert
+```
+
+**Headers:**
+```
+Content-Type: application/json
+X-API-Key: your-api-key
+```
+
+**Request Body:**
+```json
+{
+    "pr_number": 123,
+    "github": {
+        "repo": "owner/repo-name",
+        "token": "ghp_your_github_token"
+    }
+}
+```
+
+**Parameters:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pr_number` | integer | Yes | PR number to revert (must be merged) |
+| `github.repo` | string | No* | Repository in `owner/repo` format |
+| `github.token` | string | No* | GitHub token with repo write access |
+
+*Required if `DEFAULT_GITHUB_REPO` and `DEFAULT_GITHUB_TOKEN` environment variables are not set.
+
+**Response (Success):**
+```json
+{
+    "success": true,
+    "original_pr_number": 123,
+    "original_pr_title": "Add login page",
+    "original_pr_url": "https://github.com/owner/repo/pull/123",
+    "revert_pr_number": 456,
+    "revert_pr_url": "https://github.com/owner/repo/pull/456",
+    "revert_branch_name": "revert-123"
+}
+```
+
+**Note:** This creates a new PR that reverts the changes. You still need to merge the revert PR to complete the undo.
 
 ---
 
